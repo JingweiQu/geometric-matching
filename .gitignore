@@ -1,0 +1,36 @@
+# Created by .ignore support plugin (hsz.mobi)
+### Example user template template
+### Example user template
+
+# IntelliJ project files
+.idea
+*.iml
+*.sh
+*.csv
+*.pth.tar
+*.pth
+out
+gen
+/cfgs/
+/configs/
+/data/
+/images/
+/lib/
+/models/
+/~geometric_matching/
+/trainval.py
+/requirements.txt
+/LICENSE
+/~eval.py
+/demo.py
+/~test_pf.py
+/test.py
+/_init_paths.py
+/README.md
+/trainval_net.py
+/test_net.py
+/geometric_matching/train_weak.py
+/geometric_matching/eval.py
+/geometric_matching/train_strong.py
+/tmp.py
+/gm_train_new.py
