@@ -7,7 +7,7 @@ class ThetaRegression(nn.Module):
     Do regression to tnf parameters theta
     theta.shape: (batch_size, 18) for tps, (batch_size, 6) for affine
     """
-    def __init__(self, output_dim=18, use_cuda=True, init_identity=True, batch_normalization=True, kernel_sizes=[7, 5],
+    def __init__(self, output_dim=6, use_cuda=True, batch_normalization=True, kernel_sizes=[7, 5],
                  channels=[128, 64], feature_size=15):
         super(ThetaRegression, self).__init__()
         num_layers = len(kernel_sizes)
@@ -28,14 +28,16 @@ class ThetaRegression(nn.Module):
             nn_modules.append(nn.ReLU(inplace=True))
         self.conv = nn.Sequential(*nn_modules)
         self.linear = nn.Linear(ch_out * k_size * k_size, output_dim)
-
-        # Initialize the network with an identity tps, i.e. identity mapping between source and target image
-        if init_identity:
+        if output_dim == 18:
+            # Initialize the network with an identity tps, i.e. identity mapping between source and target image
             self.linear.weight.data.normal_(0, 1e-6)
             self.linear.bias.data.copy_(torch.Tensor([-1, -1, -1, 0, 0, 0, 1, 1, 1,-1, 0, 1,-1, 0, 1,-1, 0, 1]))
-        if use_cuda:
-            self.conv.cuda()
-            self.linear.cuda()
+        elif output_dim == 6:
+            self.linear.weight.data.normal_(0, 1e-6)
+            self.linear.bias.data.copy_(torch.Tensor([1, 0, 0, 0, 1, 0]))
+        # if use_cuda:
+        #     self.conv.cuda()
+        #     self.linear.cuda()
 
     def forward(self, x):
         # x.shape: (batch_size, 225, 15, 15)

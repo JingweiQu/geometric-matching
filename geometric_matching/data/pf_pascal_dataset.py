@@ -1,10 +1,10 @@
 # ==============================================================================================================
 # Generate a testing dataset from PF-PASCAL for geometric matching model
-# Author: Jingwei Qu
+# Author: Ignacio Rocco
+# Modification: Jingwei Qu
 # Date: 18 May 2019
 # ==============================================================================================================
 
-from __future__ import print_function, division
 import torch
 import os
 from os.path import exists, join, basename
@@ -17,12 +17,11 @@ from geometric_matching.util.net_util import roi_data
 
 class PFPASCALDataset(Dataset):
     """
-
     Proposal Flow PASCAL image pair dataset
 
     Args:
             csv_file (string): Path to the csv file with image names and transformations
-            training_image_path (string): Directory with all the images
+            dataset_path (string): Directory with all the images
             output_size (2-tuple): Desired output size
             transform (callable): Transformation for post-processing the training pair (eg. image normalization)
 
@@ -35,43 +34,45 @@ class PFPASCALDataset(Dataset):
                'source_im_info' & 'target_im_info': image size & image scale ratio,
                'source_gt_boxes' & 'target_gt_boxes': coordinates of ground-truth bounding boxes, set to [1, 1, 1, 1, 1]
                'source_num_boxes' & 'target_num_boxes': number of ground-truth bounding boxes, set to 0}
-
     """
 
     def __init__(self, csv_file, dataset_path, output_size=(240, 240), transform=None, category=None,
                  pck_procedure='scnet'):
-        self.category_names = ['aeroplane', 'bicycle', 'bird', 'boat', 'bottle', 'bus', 'car', 'cat', 'chair', 'cow',
-                               'diningtable', 'dog', 'horse', 'motorbike', 'person', 'pottedplant', 'sheep', 'sofa',
-                               'train', 'tvmonitor']
-        self.out_h, self.out_w = output_size
         self.dataframe = pd.read_csv(csv_file)  # Read images data
-        self.category = self.dataframe.iloc[:, 2].values.astype('float')    # Get image category
+        self.categories = self.dataframe.iloc[:, 2].values.astype('float')  # Get image category
+        # Select image data according to given category
         if category is not None:
-            cat_idx = np.nonzero(self.category == category)[0]
-            self.category = self.category[cat_idx]
+            cat_idx = np.nonzero(self.categories == category)[0]
+            self.categories = self.categories[cat_idx]
             self.dataframe = self.dataframe.iloc[cat_idx, :]
-        self.img_A_names = self.dataframe.iloc[:, 0]    # Get source image & target image name
+        self.img_A_names = self.dataframe.iloc[:, 0]  # Get source image & target image name
         self.img_B_names = self.dataframe.iloc[:, 1]
         self.point_A_coords = self.dataframe.iloc[:, 3:5]   # Get key points in source image and target image
         self.point_B_coords = self.dataframe.iloc[:, 5:]
-        self.dataset_path = dataset_path    # Path for reading images
+        self.dataset_path = dataset_path  # Path for reading images
+        self.out_h, self.out_w = output_size
         self.transform = transform
+        self.pck_procedure = pck_procedure
+        self.category_names = ['aeroplane', 'bicycle', 'bird', 'boat', 'bottle', 'bus', 'car', 'cat', 'chair', 'cow',
+                               'diningtable', 'dog', 'horse', 'motorbike', 'person', 'pottedplant', 'sheep', 'sofa',
+                               'train', 'tvmonitor']
         # Initialize an affine transformation to resize the image to (240, 240)
         self.affineTnf = GeometricTnf(geometric_model='affine', out_h=self.out_h, out_w=self.out_w, use_cuda=False)
-        self.pck_procedure = pck_procedure
 
     def __len__(self):
         return len(self.dataframe)
 
     def __getitem__(self, idx):
         # get pre-processed images
-        image_A, im_size_A, im_A, im_info_A, gt_boxes_A, num_boxes_A = self.get_image(self.img_A_names, idx)
-        image_B, im_size_B, im_B, im_info_B, gt_boxes_B, num_boxes_B = self.get_image(self.img_B_names, idx)
+        image_A, im_size_A, im_A, im_info_A, gt_boxes_A, num_boxes_A = self.get_image(img_name_list=self.img_A_names,
+                                                                                      idx=idx)
+        image_B, im_size_B, im_B, im_info_B, gt_boxes_B, num_boxes_B = self.get_image(img_name_list=self.img_B_names,
+                                                                                      idx=idx)
 
         # get pre-processed point coords
         # point_A_coords.shape & point_B_coords.shape: (2, 20), including coordinates of key points, others are -1
-        point_A_coords = self.get_points(self.point_A_coords, idx)
-        point_B_coords = self.get_points(self.point_B_coords, idx)
+        point_A_coords = self.get_points(point_coords_list=self.point_A_coords, idx=idx)
+        point_B_coords = self.get_points(point_coords_list=self.point_B_coords, idx=idx)
 
         # Number of key points in image_A
         N_pts = torch.sum(torch.ne(point_A_coords[0, :], -1))
@@ -120,16 +121,14 @@ class PFPASCALDataset(Dataset):
         # Get tensors of image, image_info (H, W, im_scale), ground-truth boxes, number of boxes for faster rcnn
         im, im_info, gt_boxes, num_boxes = roi_data(image)
 
-        # Transform numpy to tensor
-        image = torch.Tensor(image)
+        # Transform numpy to tensor, permute order of image to CHW
+        image = torch.Tensor(image.astype(np.float32))
+        image = image.permute(2, 0, 1)
         im_size = torch.Tensor(im_size)
 
-        image = image.permute(2, 0, 1)
-
         # Resize image using bilinear sampling with identity affine tnf
-        if image.shape[1] != self.out_h or image.shape[2] != self.out_w:
-            image.requires_grad = False
-            image = self.affineTnf(image.unsqueeze(0)).squeeze(0)
+        image.requires_grad = False
+        image = self.affineTnf(image.unsqueeze(0)).squeeze(0)
 
         return image, im_size, im, im_info, gt_boxes, num_boxes
 

@@ -6,6 +6,7 @@
 
 import shutil
 import torch
+import torch.nn.functional as F
 from torch.autograd import Variable
 import os
 from os import makedirs, remove
@@ -24,24 +25,27 @@ from geometric_matching.image.normalization import normalize_image
 from geometric_matching.util.dataloader import default_collate
 
 import matplotlib
-matplotlib.use('Qt5Agg')
+# matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 
-class BatchTensorToVars(object):
-    """ Convert tensors in dict batch to vars """
-    def __init__(self, use_cuda=True):
-        self.use_cuda = use_cuda
+def batch_cuda(batch=None):
+    """ Move tensors in batch to cuda device """
+    for k, v in batch.items():
+        if isinstance(v, torch.Tensor) and not batch[k].is_cuda:
+            batch[k] = batch[k].cuda()
+            batch[k].requires_grad = False
 
-    def __call__(self, batch):
-        batch_var = {}
-        for key, value in batch.items():
-            if isinstance(value, torch.Tensor) and not self.use_cuda:
-                batch_var[key] = Variable(value, requires_grad=False)
-            elif isinstance(value, torch.Tensor) and self.use_cuda:
-                batch_var[key] = Variable(value, requires_grad=False).cuda()
-            else:
-                batch_var[key] = value
-        return batch_var
+    return batch
+
+def get_dataset_csv(dataset_path=None, dataset=None, subset=None, geometric_model='tps', random_t_tps=None):
+    dataset_path = os.path.join(dataset_path, dataset)
+    if random_t_tps is not None:
+        dataset = dataset + '_' + str(random_t_tps)
+    if subset == 'train':
+        dataset = geometric_model + '_' + dataset
+    csv_file = os.path.join(dataset_path, subset + '_' + dataset + '.csv')
+
+    return csv_file, dataset_path
 
 def collate_custom(batch):
     """ Custom collate function for the Dataset class
@@ -73,8 +77,8 @@ def Softmax1D(x,dim):
     exp_x = torch.exp(x)
     return torch.div(exp_x,torch.sum(exp_x,dim).unsqueeze(dim).expand_as(x))
 
-# def save_checkpoint(state, is_best, file):
-def save_checkpoint(state, file):
+def save_checkpoint(state, is_best, file):
+# def save_checkpoint(state, file):
     """ Save checkpoint of the trained model """
     model_dir = dirname(file)
     model_fn = basename(file)
@@ -83,8 +87,8 @@ def save_checkpoint(state, file):
         makedirs(model_dir)
     torch.save(state, file)
     # Select the best model, and copy
-    # if is_best:
-    #     shutil.copyfile(file, join(model_dir, 'best_' + model_fn))
+    if is_best:
+        shutil.copyfile(file, join(model_dir, 'best_' + model_fn))
 
 def str_to_bool(v):
     """ Transform string to bool """
@@ -110,18 +114,17 @@ def roi_data(image):
     # We use the same pixel mean for all networks even though it's not exactly what
     # they were trained with
     pixel_means = np.array([[[102.9801, 115.9465, 122.7717]]])
-    image, im_scale = prep_im_for_blob_2(image, pixel_means, target_size=240)
+    image, im_scale = prep_im_for_blob_2(im=image, pixel_means=pixel_means, target_size=240)
     im_info = np.array([image.shape[0], image.shape[1], im_scale], dtype=np.float32)
 
     # numpy to tensor
-    image = torch.Tensor(image)
+    image = torch.Tensor(image.astype(np.float32))
     image = image.permute(2, 0, 1)
     im_info = torch.Tensor(im_info)
     gt_boxes = torch.Tensor([1, 1, 1, 1, 1])
     num_boxes = 0
 
     return image, im_info, gt_boxes, num_boxes
-
 
 def select_boxes(rois, cls_prob, bbox_pred, im_infos, thresh=0.05, max_per_image=50):
     """ Select bounding boxes of objects from the predicted results of faster rcnn """
@@ -143,11 +146,11 @@ def select_boxes(rois, cls_prob, bbox_pred, im_infos, thresh=0.05, max_per_image
         # Compute predicted boxes by predicted rois and the corresponding box deltas
         # Clip borders of predicted boxes if they cross the border of the resized image
         pred_boxes = bbox_transform_inv(boxes, box_deltas, batch_size=1)
-        padding = 5
-        pred_boxes[:, :, 0::4] -= padding
-        pred_boxes[:, :, 1::4] -= padding
-        pred_boxes[:, :, 2::4] += padding
-        pred_boxes[:, :, 3::4] += padding
+        # padding = 5
+        # pred_boxes[:, :, 0::4] -= padding
+        # pred_boxes[:, :, 1::4] -= padding
+        # pred_boxes[:, :, 2::4] += padding
+        # pred_boxes[:, :, 3::4] += padding
         pred_boxes = clip_boxes(pred_boxes, im_info, batch_size=1)
 
         # pred_boxes.shape: (300, 4 * n_classes)
@@ -199,11 +202,15 @@ def select_boxes(rois, cls_prob, bbox_pred, im_infos, thresh=0.05, max_per_image
 
 def select_box(all_boxes_s, all_boxes_t):
     """ Select the object bounding box from the selected bounding boxes """
-    boxes_s = torch.Tensor(len(all_boxes_s), 4).zero_() - 1
-    boxes_t = torch.Tensor(len(all_boxes_t), 4).zero_() - 1
+    # boxes_s = torch.Tensor(len(all_boxes_s), 4).zero_() - 1
+    # boxes_t = torch.Tensor(len(all_boxes_t), 4).zero_() - 1
+    boxes_s = torch.Tensor(len(all_boxes_s), 6).zero_() - 1
+    boxes_t = torch.Tensor(len(all_boxes_t), 6).zero_() - 1
     for j in range(len(all_boxes_s)):
-        box_s = np.ones(4, dtype=np.float) * -1
-        box_t = np.ones(4, dtype=np.float) * -1
+        # box_s = np.ones(4, dtype=np.float) * -1
+        # box_t = np.ones(4, dtype=np.float) * -1
+        box_s = np.ones(6, dtype=np.float) * -1
+        box_t = np.ones(6, dtype=np.float) * -1
         all_box_s = all_boxes_s[j]
         all_box_t = all_boxes_t[j]
         if all_box_s.shape[0] != 0 and all_box_t.shape[0] != 0:
@@ -212,8 +219,10 @@ def select_box(all_boxes_s, all_boxes_t):
             for i in range(class_s.shape[0]):
                 keep = np.where(class_ids == class_s[i])[0]
                 if keep.size != 0:
-                    box_s = all_box_s[i, :4]
-                    box_t = all_box_t[keep[0], :4]
+                    # box_s = all_box_s[i, :4]
+                    # box_t = all_box_t[keep[0], :4]
+                    box_s = all_box_s[i, :]
+                    box_t = all_box_t[keep[0], :]
                     break
 
         boxes_s[j, :] = torch.Tensor(box_s)
@@ -247,7 +256,6 @@ def select_box(all_boxes_s, all_boxes_t):
     return boxes_s, boxes_t
 '''
 
-
 def select_box_single(all_boxes):
     """ Select the object bounding box with the highest score """
     boxes = torch.ones(len(all_boxes), 4, dtype=torch.float) * -1
@@ -261,7 +269,6 @@ def select_box_single(all_boxes):
 
     return boxes
 
-
 def numpy_image(image):
     """ Transform image tensor to image numpy """
     image = image.permute(1, 2, 0).cpu().numpy()
@@ -272,13 +279,8 @@ def numpy_image(image):
 
     return image
 
-
-def im_show_1(image, title, rows, cols, index):
+def im_show_1(image=None, title='', rows=1, cols=1, index=1):
     """ Show image (transfer tensor to numpy first) """
-    # image = image.permute(1, 2, 0).cpu().numpy()
-    # mean = np.array([0.485, 0.456, 0.406])
-    # std = np.array([0.229, 0.224, 0.225])
-    # image = std * image + mean
     image = normalize_image(image, forward=False)
     image = image.permute(1, 2, 0).cpu().numpy()
     ax = plt.subplot(rows, cols, index)
@@ -286,7 +288,6 @@ def im_show_1(image, title, rows, cols, index):
     ax.imshow(image.clip(0, 1))
 
     return ax
-
 
 def im_show_2(image, title, rows, cols, index):
     """ Show image (transfer tensor to numpy first) """
@@ -296,7 +297,6 @@ def im_show_2(image, title, rows, cols, index):
     ax.imshow(image.clip(0, 1))
 
     return ax
-
 
 def show_boxes(ax, boxes):
     """ Show bounding boxes on the image """
@@ -316,14 +316,13 @@ def show_boxes(ax, boxes):
             for i in range(boxes.shape[0]):
                 rect = plt.Rectangle((boxes[i, 0], boxes[i, 1]), widths[i], heights[i], fill=False, edgecolor='r', linewidth=2)
                 ax.add_patch(rect)
-                plt.text(boxes[i, 0], boxes[i, 1], dataset_classes[int(boxes[i, 5])] + ' ' + '%.3f' % boxes[i, 4], fontsize=16, color='y')
+                plt.text(boxes[i, 0], boxes[i, 1], dataset_classes[int(boxes[i, 5])] + ' ' + '%.3f' % boxes[i, 4], fontsize=16, color='g')
                 # break
         elif boxes.shape[1] == 4:
             rect = plt.Rectangle((boxes[:, 0], boxes[:, 1]), widths, heights, fill=False, edgecolor='r', linewidth=2)
             ax.add_patch(rect)
     else:
         print('No object is detected')
-
 
 def correct_keypoints(source_points, warped_points, L_pck, alpha=0.1):
     """ Compute PCK """
@@ -334,7 +333,6 @@ def correct_keypoints(source_points, warped_points, L_pck, alpha=0.1):
     num_of_correct_points = torch.sum(correct_points)
     num_of_points = correct_points.numel()
     return num_of_correct_points.item(), num_of_points
-
 
 def parse_xml(filename):
     """ Parse a PASCAL VOC xml file """

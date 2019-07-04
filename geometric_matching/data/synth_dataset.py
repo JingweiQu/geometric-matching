@@ -1,6 +1,7 @@
 # =================================================================================================================
 # Generate a synthetically training dataset from PascalVOC2011 for geometric matching model
-# Author: Jingwei Qu
+# Author: Ignacio Rocco
+# Modification: Jingwei Qu
 # Date: 19 April 2019
 # =================================================================================================================
 
@@ -15,7 +16,6 @@ from torch.utils.data import Dataset
 # from geotnf.transformation import GeometricTnf
 from geometric_matching.geotnf.transformation import GeometricTnf
 from geometric_matching.util.net_util import roi_data
-
 
 class SynthDataset(Dataset):
     """
@@ -34,25 +34,24 @@ class SynthDataset(Dataset):
 
     """
 
-    def __init__(self, csv_file, dataset_path, output_size=(480,640), geometric_model='affine', dataset_size=0,
+    def __init__(self, csv_file, dataset_path, output_size=(480, 640), geometric_model='tps', dataset_size=0,
                  transform=None, random_sample=False, random_t=0.5, random_s=0.5, random_alpha=1/6, random_t_tps=0.4):
+        self.dataset_path = dataset_path  # Path for reading images
         self.out_h, self.out_w = output_size
-        self.dataframe = pd.read_csv(csv_file)  # Read images data
+        self.geometric_model = geometric_model
+        self.transform = transform
         self.random_sample = random_sample
         self.random_t = random_t
-        self.random_t_tps = random_t_tps
-        self.random_alpha = random_alpha
         self.random_s = random_s
-        if dataset_size!=0:
+        self.random_alpha = random_alpha
+        self.random_t_tps = random_t_tps
+        self.dataframe = pd.read_csv(csv_file)  # Read images data
+        if dataset_size != 0:
             dataset_size = min((dataset_size, len(self.dataframe)))
             self.dataframe = self.dataframe.iloc[0:dataset_size, :]
         self.img_names = self.dataframe.iloc[:, 0]  # Get image name
-        if self.random_sample==False:
+        if not self.random_sample:
             self.theta_array = self.dataframe.iloc[:, 1:].values.astype('float') # Get ground-truth tps parameters
-        # copy arguments
-        self.dataset_path = dataset_path    # Path for reading images
-        self.transform = transform
-        self.geometric_model = geometric_model
         # Initialize an affine transformation to resize the image to (480, 640)
         self.affineTnf = GeometricTnf(geometric_model='affine', out_h=self.out_h, out_w=self.out_w, use_cuda=False)
         
@@ -71,7 +70,7 @@ class SynthDataset(Dataset):
         im, im_info, gt_boxes, num_boxes = roi_data(image)
         
         # read theta
-        if self.random_sample == False:
+        if not self.random_sample:
             theta = self.theta_array[idx, :]
 
             if self.geometric_model == 'affine':
@@ -102,22 +101,22 @@ class SynthDataset(Dataset):
             elif self.geometric_model == 'afftps':
                 theta = np.concatenate((theta_aff, theta_tps))
             
-        # make arrays float tensor for subsequent processing
+        # Transform numpy to tensor, permute order of image to CHW
         # image = torch.Tensor(image.astype(np.float32))
         # theta = torch.Tensor(theta.astype(np.float32))
         image = torch.Tensor(image)
-        theta = torch.Tensor(theta)
-        
-        # permute order of image to CHW
-        # image = image.transpose(1,2).transpose(0,1)
         image = image.permute(2, 0, 1)
+        theta = torch.Tensor(theta)
+
+        # image = image.transpose(1,2).transpose(0,1)
+
                 
         # Resize image using bilinear sampling with identity affine tnf
-        if image.shape[1] != self.out_h or image.shape[2] != self.out_w:
+        # if image.shape[1] != self.out_h or image.shape[2] != self.out_w:
             # image = self.affineTnf(Variable(image.unsqueeze(0),requires_grad=False)).data.squeeze(0)
             # image = self.affineTnf(image.unsqueeze(0)).data.squeeze(0)
-            image.requires_grad = False
-            image = self.affineTnf(image.unsqueeze(0)).squeeze(0)
+        image.requires_grad = False
+        image = self.affineTnf(image.unsqueeze(0)).squeeze(0)
 
         sample = {'image': image, 'theta': theta, 'im': im, 'im_info': im_info, 'gt_boxes': gt_boxes, 'num_boxes': num_boxes}
         

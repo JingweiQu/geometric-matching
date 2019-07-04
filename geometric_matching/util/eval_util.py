@@ -453,7 +453,7 @@ def area_metrics(batch,batch_start_idx,theta_aff,theta_tps,theta_aff_tps,stats,a
             stats['aff_tps']['localization_error'][idx] = localization_error(source_mask_np, target_mask_np, flow_aff_tps)
         
     return stats
-
+'''
 
 def flow_metrics(batch,batch_start_idx,theta_aff,theta_tps,theta_aff_tps,stats,args,use_cuda=True):
     result_path=args.flow_output_dir
@@ -584,4 +584,3 @@ def obj_ptr(mask):
     x_image = (x_image - left)/fg_width;
     y_image = (y_image - top)/fg_height;
     return (x_image,y_image)
-'''

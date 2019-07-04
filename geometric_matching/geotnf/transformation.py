@@ -22,8 +22,8 @@ class GeometricTnf(object):
     ( can be used with no transformation to perform bilinear resizing )
 
     """
-    def __init__(self, geometric_model='affine', tps_grid_size=3, tps_reg_factor=0, out_h=240, out_w=240, out_ch=3,
-                 offset_factor=None, use_cuda=True):
+    def __init__(self, geometric_model='affine', out_h=240, out_w=240, out_ch=3, use_cuda=True,
+                 tps_grid_size=3, tps_reg_factor=0, offset_factor=None):
         self.out_h = out_h
         self.out_w = out_w
         self.use_cuda = use_cuda
@@ -49,8 +49,8 @@ class GeometricTnf(object):
         if use_cuda:
             self.theta_identity = self.theta_identity.cuda()
 
-    def __call__(self, image_batch, theta_batch=None, out_h=None, out_w=None, return_warped_image=True,
-                 return_sampling_grid=False, padding_factor=1.0, crop_factor=1.0):
+    def __call__(self, image_batch, theta_batch=None, padding_factor=1.0, crop_factor=1.0, out_h=None, out_w=None,
+                 return_warped_image=True, return_sampling_grid=False):
         # padding_factor and crop_factor are used for grid
         # image_batch.shape: (batch_size, 3, H, W)
         if image_batch is None:
@@ -183,7 +183,7 @@ class TpsGridGen(Module):
         # sampling grid with dim-0 coords (Y, out_h)
         # Grid scale is (-1, -1, 1, 1), a square with (x_min, y_min, x_max, y_max), the points is out_h * out_w
         self.grid_X, self.grid_Y = np.meshgrid(np.linspace(-1, 1, out_w), np.linspace(-1, 1, out_h))
-        # self.grid_X, self.grid_Y: size [1, out_w, out_h, 1]
+        # self.grid_X, self.grid_Y: size [1, out_h, out_w, 1]
         self.grid_X = torch.Tensor(self.grid_X).unsqueeze(0).unsqueeze(3)
         self.grid_Y = torch.Tensor(self.grid_Y).unsqueeze(0).unsqueeze(3)
         self.grid_X.requires_grad = False
@@ -218,7 +218,7 @@ class TpsGridGen(Module):
 
     def forward(self, theta):
 
-        # Generate the grid (warped_grid) for tps transformation with the given theta
+        # Generate the warped grid for tps transformation with the given theta and the grid
         # theta.shape: (batch_size, 18) for tps
         # self.grid_X, self.grid_Y: size [1, out_h, out_w, 1]
         # warped_grid.shape: (batch_size, out_h, out_w, 2)
@@ -252,7 +252,7 @@ class TpsGridGen(Module):
             Li = Li.cuda()
         return Li
 
-    # Generate the grid for tps transformation with the given theta and out_size (points)
+    # Generate the warped grid for tps transformation with the given theta and the grid
     def apply_transformation(self, theta, points):
         # theta.shape: (batch_size, 18) for tps
         # points.shape: (batch_size, out_h, out_w, 2), for loss: (batch_size, 1, 400, 2)
@@ -267,6 +267,7 @@ class TpsGridGen(Module):
         batch_size = theta.size()[0]
         # split theta into point coordinates
         # Q_X.shape and Q_Y.shape: (batch_size, 9, 1)
+        # Vertical axis is X, horizontal axis is Y
         Q_X = theta[:, :self.N, :, :].squeeze(3)
         Q_Y = theta[:, self.N:, :, :].squeeze(3)
 

@@ -26,7 +26,8 @@ class FeatureCorrelation(nn.Module):
             # bmm: batch matrix-matrix product, b * (h * w) * (h * w)
             feature_mul = torch.bmm(feature_B, feature_A)
             # correlation_tensor.shape: (b, h * w, h, w), such as (225, 15, 15)
-            correlation_tensor = feature_mul.view(b, h, w, h * w).transpose(2, 3).transpose(1, 2)
+            # correlation_tensor = feature_mul.view(b, h, w, h * w).transpose(2, 3).transpose(1, 2)
+            correlation_tensor = feature_mul.view(b, h, w, h * w).permute(0, 3, 1, 2)
         elif self.shape == '4D':
             # reshape features for matrix multiplication
             feature_A = feature_A.view(b, c, h * w).transpose(1, 2)  # size [b,c,h*w]

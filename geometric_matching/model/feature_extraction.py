@@ -5,7 +5,7 @@ import torchvision.models as models
 from geometric_matching.model.featureL2norm import FeatureL2Norm
 
 # Extract feature maps of two images with the pre-trained model (VGG16 or ResNet101)
-class FeatureExtraction(torch.nn.Module):
+class FeatureExtraction(nn.Module):
     """
     Extract feature maps of images by VGG16 or ResNet101
     """
@@ -16,7 +16,7 @@ class FeatureExtraction(torch.nn.Module):
         self.normalization = normalization
         if feature_extraction_cnn == 'vgg':
             if pretrained:
-                """Use ImageNet pre-trained vgg"""
+                """ Use ImageNet pre-trained vgg """
                 self.model = models.vgg16(pretrained=pretrained)
                 # keep feature extraction network up to indicated layer
                 vgg_feature_layers = ['conv1_1', 'relu1_1', 'conv1_2', 'relu1_2', 'pool1', 'conv2_1',
@@ -31,7 +31,7 @@ class FeatureExtraction(torch.nn.Module):
                 self.model = nn.Sequential(*list(self.model.features.children())[:last_layer_idx + 1])
 
             else:
-                """Use PascalVOC2011 fine-tuned vgg"""
+                """ Use PascalVOC2011 fine-tuned vgg """
                 # Load pre-trained vgg16 from faster rcnn (pre-trained on ImageNet, fine-tuned on PascalVOC2011)
                 self.model_path = 'models/vgg16/pascal_voc_2011/best_faster_rcnn_1_7_23079.pth'
                 self.model = models.vgg16()
@@ -93,6 +93,7 @@ class FeatureExtraction(torch.nn.Module):
             # keep feature extraction network up to transitionlayer2
             self.model = nn.Sequential(*list(self.model.features.children())[:-4])
 
+        '''
         # freeze parameters, directly use the pre-trained model without finetuning
         if not train_fe:
             for param in self.model.parameters():
@@ -100,6 +101,7 @@ class FeatureExtraction(torch.nn.Module):
         # move to GPU
         if use_cuda:
             self.model.cuda()
+        '''
 
     def forward(self, image_batch):
         # image_batch.shape: (batch_size, 3, H, W), such as (240, 240)

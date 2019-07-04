@@ -2,7 +2,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.autograd import Variable
-from geotnf.point_tnf import normalize_axis, unnormalize_axis
+from geometric_matching.geotnf.point_tnf import normalize_axis, unnormalize_axis
 
 def read_flo_file(filename,verbose=False):
     """
@@ -54,7 +54,6 @@ def write_flo_file(flow, filename):
     flow.tofile(f)
     f.close()
 
-
 def warp_image(image, flow):
     """
     Warp image (np.ndarray, shape=[h_src,w_src,3]) with flow (np.ndarray, shape=[h_tgt,w_tgt,2])
@@ -83,43 +82,32 @@ def np_flow_to_th_sampling_grid(flow,h_src,w_src,use_cuda=False):
         sampling_grid_torch = sampling_grid_torch.cuda()
     return sampling_grid_torch
 
-# def th_sampling_grid_to_np_flow(source_grid,h_src,w_src):
-#     batch_size = source_grid.size(0)
-#     h_tgt,w_tgt=source_grid.size(1),source_grid.size(2)
-#     source_x_norm=source_grid[:,:,:,0]
-#     source_y_norm=source_grid[:,:,:,1]
-#     source_x=unnormalize_axis(source_x_norm,w_src) 
-#     source_y=unnormalize_axis(source_y_norm,h_src) 
-#     source_x=source_x.data.cpu().numpy()
-#     source_y=source_y.data.cpu().numpy()
-#     grid_x,grid_y = np.meshgrid(range(1,w_tgt+1),range(1,h_tgt+1))
-#     grid_x = np.repeat(grid_x,axis=0,repeats=batch_size)
-#     grid_y = np.repeat(grid_y,axis=0,repeats=batch_size)
-#     disp_x=source_x-grid_x
-#     disp_y=source_y-grid_y
-#     flow = np.concatenate((np.expand_dims(disp_x,3),np.expand_dims(disp_y,3)),3)
-#     return flow
-
-def th_sampling_grid_to_np_flow(source_grid,h_src,w_src):
-    # remove batch dimension
+def th_sampling_grid_to_np_flow(source_grid, h_src, w_src):
+    """ Transform sampling grid to flow """
+    # Flow describes displacements of coordinates of each pixel (x and y)
+    # remove batch dimension, source_grid.shape: (h_tgt, w_tgt, 2)
     source_grid = source_grid.squeeze(0)
     # get mask
-    in_bound_mask=(source_grid.data[:,:,0]>-1) & (source_grid.data[:,:,0]<1) & (source_grid.data[:,:,1]>-1) & (source_grid.data[:,:,1]<1)
-    in_bound_mask=in_bound_mask.cpu().numpy()
+    in_bound_mask = (source_grid[:, :, 0] > -1) & (source_grid[:, :, 0] < 1) & (source_grid[:, :, 1] > -1) & (source_grid[:, :, 1] < 1)
+    in_bound_mask = in_bound_mask.cpu().numpy()
     # convert coords
-    h_tgt,w_tgt=source_grid.size(0),source_grid.size(1)
-    source_x_norm=source_grid[:,:,0]
-    source_y_norm=source_grid[:,:,1]
-    source_x=unnormalize_axis(source_x_norm,w_src) 
-    source_y=unnormalize_axis(source_y_norm,h_src) 
-    source_x=source_x.data.cpu().numpy()
-    source_y=source_y.data.cpu().numpy()
-    grid_x,grid_y = np.meshgrid(range(1,w_tgt+1),range(1,h_tgt+1))
-    disp_x=source_x-grid_x
-    disp_y=source_y-grid_y
+    h_tgt, w_tgt = source_grid.size(0), source_grid.size(1)
+    source_x_norm = source_grid[:, :, 0]
+    source_y_norm = source_grid[:, :, 1]
+    source_x = unnormalize_axis(source_x_norm, w_src)
+    source_y = unnormalize_axis(source_y_norm, h_src)
+    # source_x = source_x.data.cpu().numpy()
+    # source_y = source_y.data.cpu().numpy()
+    source_x = source_x.cpu().numpy()
+    source_y = source_y.cpu().numpy()
+    # Generate original coordinates of pixels, grid_x, grid_y.shape: (h_tgt, w_tgt)
+    grid_x, grid_y = np.meshgrid(range(1, w_tgt + 1), range(1, h_tgt + 1))
+    disp_x = source_x - grid_x
+    disp_y = source_y - grid_y
     # apply mask
-    disp_x = disp_x*in_bound_mask+1e10*(1-in_bound_mask)
-    disp_y = disp_y*in_bound_mask+1e10*(1-in_bound_mask)
-    flow = np.concatenate((np.expand_dims(disp_x,2),np.expand_dims(disp_y,2)),2)
+    disp_x = disp_x * in_bound_mask + 1e10 * (1 - in_bound_mask)
+    disp_y = disp_y * in_bound_mask + 1e10 * (1 - in_bound_mask)
+    # flow.shape: (h_tgt, w_tgt, 2)
+    flow = np.concatenate((np.expand_dims(disp_x, 2), np.expand_dims(disp_y, 2)), 2)
     return flow
 

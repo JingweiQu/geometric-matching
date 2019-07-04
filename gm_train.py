@@ -20,473 +20,259 @@ from torch.autograd import Variable
 import torch.nn as nn
 import torch.optim as optim
 import pdb
+from collections import OrderedDict
 
-from geometric_matching.util.net_util import save_checkpoint, str_to_bool
+from geometric_matching.arguments.arguments_setting import Arguments
+from geometric_matching.util.net_util import get_dataset_csv, save_checkpoint, str_to_bool
+from geometric_matching.model.dual_geometric_matching import DualGeometricMatching
 from geometric_matching.model.geometric_matching import GeometricMatching
-# from geometric_matching.model.loss import TransformedGridLoss
-# from geometric_matching.model.loss_new import TransformedGridLoss
-from geometric_matching.data.synth_pair import SynthPairTnf
-from geometric_matching.data.synth_dataset import SynthDataset
+from geometric_matching.model.loss import TransformedGridLoss
 from geometric_matching.data.train_dataset import TrainDataset
-from geometric_matching.data.train_pair import TrainPairTnf
+from geometric_matching.data.pf_pascal_dataset import PFPASCALDataset
+from geometric_matching.data.train_triple import TrainTriple
 from geometric_matching.image.normalization import NormalizeImageDict
-from geometric_matching.util.train_val_fn import *
+from geometric_matching.util.train_fn import *
+from geometric_matching.util.test_fn import *
 from geometric_matching.geotnf.transformation import GeometricTnf
 
 from lib.model.utils.config import cfg, cfg_from_file, cfg_from_list
-from lib.model.faster_rcnn.vgg16 import vgg16
 
 import matplotlib
-matplotlib.use('Qt5Agg')
+# matplotlib.use('Qt5Agg')
 import matplotlib.pyplot as plt
-
-
-def parse_args():
-    """Parse input arguments"""
-
-    parser = argparse.ArgumentParser(description='Train a geometric matching network based on predicted rois by a faster rcnn')
-    """ Arguments for the fasterRCNN """
-    parser.add_argument('--dataset', dest='dataset', help='training dataset', default='pascal_voc_2011', type=str)
-    parser.add_argument('--cfg', dest='cfg_file', help='optional config file', default='cfgs/vgg16.yml', type=str)
-    parser.add_argument('--net', dest='net', help='vgg16, res50, res101, res152', default='vgg16', type=str)
-    parser.add_argument('--set', dest='set_cfgs', help='set config keys', default=None, nargs=argparse.REMAINDER)
-    parser.add_argument('--load_dir', dest='load_dir', help='directory to load models', default="models", type=str)
-    parser.add_argument('--cuda', dest='cuda', help='whether use CUDA', action='store_true')
-    parser.add_argument('--mGPUs', dest='mGPUs', help='whether use multiple GPUs', action='store_true')
-    parser.add_argument('--cag', dest='class_agnostic', help='whether perform class_agnostic bbox regression',
-                        action='store_true')
-    parser.add_argument('--parallel_type', dest='parallel_type',
-                        help='which part of model to parallel, 0: all, 1: model before roi pooling', default=0,
-                        type=int)
-    parser.add_argument('--checksession', dest='checksession', help='checksession to load model', default=1,
-                        type=int)
-    parser.add_argument('--checkepoch', dest='checkepoch', help='checkepoch to load network', default=7, type=int)
-    parser.add_argument('--checkpoint', dest='checkpoint', help='checkpoint to load network', default=23079, type=int)
-
-    """ Arguments for the geometric matching model """
-    # Training dataset parameters
-    parser.add_argument('--training-dataset', type=str, default='PF-PASCAL',
-                        help='Dataset to use for training: PF-PASCAL/PascalVOC2011')
-    parser.add_argument('--training-dataset-path', type=str, default='geometric_matching/training_data',
-                        help='Path to folder containing training dataset')
-    parser.add_argument('--random-sample', type=str_to_bool, nargs='?', const=True, default=False,
-                        help='sample random transformations')
-    # Optimization parameters
-    parser.add_argument('--lr', type=float, default=0.001, help='learning rate')
-    parser.add_argument('--momentum', type=float, default=0.9, help='momentum constant')
-    parser.add_argument('--num-epochs', type=int, default=10, help='number of training epochs')
-    parser.add_argument('--batch-size', type=int, default=16, help='training batch size')
-    parser.add_argument('--weight-decay', type=float, default=0, help='weight decay constant')
-    parser.add_argument('--seed', type=int, default=2, help='Pseudo-RNG seed')
-    # Model parameters
-    parser.add_argument('--geometric-model', type=str, default='tps',
-                        help='Geometric model to be regressed at output: affine or tps')
-    parser.add_argument('--use-mse-loss', type=str_to_bool, nargs='?', const=True, default=False,
-                        help='Use MSE loss on tnf. parameters')
-    parser.add_argument('--feature-extraction-cnn', type=str, default='vgg',
-                        help='Feature extraction architecture: vgg/resnet101')
-    parser.add_argument('--trained-models-dir', type=str, default='geometric_matching/trained_models',
-                        help='Path to trained models folder')
-    parser.add_argument('--trained-models-fn', type=str, default='checkpoint_adam', help='Trained model filename')
-
-    args = parser.parse_args()
-    return args
-
 
 if __name__ == '__main__':
 
     # os.environ["CUDA_VISIBLE_DEVICES"] = '0'
     # print('Use GPU: {}-{}'.format(torch.cuda.get_device_name(torch.cuda.current_device()), torch.cuda.current_device()))
 
-    ''' Initialize arguments '''
-    args = parse_args()
+    print('Train GeometricMatching using weak supervision')
 
-    print('Called with args:')
+    ''' Load arguments '''
+    args, arg_groups = Arguments(mode='train').parse()
+    print('Arguments setting:')
     print(args)
 
     if torch.cuda.is_available() and not args.cuda:
-        print("WARNING: You have a CUDA device, so you should probably run with --cuda")
+        print('WARNING: You have a CUDA device, so you should probably run with --cuda')
 
-    np.random.seed(cfg.RNG_SEED)
+    torch.manual_seed(args.seed)
+    if args.cuda:
+        torch.cuda.manual_seed(args.seed)
+    np.random.seed(args.seed)
 
-    args.set_cfgs = ['ANCHOR_SCALES', '[8, 16, 32]', 'ANCHOR_RATIOS', '[0.5,1,2]', 'MAX_NUM_GT_BOXES', '20']
-    args.cfg_file = "cfgs/{}.yml".format(args.net)
-
+    # Config for fasterRCNN
+    args.set_cfgs = ['ANCHOR_SCALES', '[8, 16, 32]', 'ANCHOR_RATIOS', '[0.5, 1, 2]', 'MAX_NUM_GT_BOXES', '20']
+    args.cfg_file = 'cfgs/{}.yml'.format(args.net)
     if args.cfg_file is not None:
         cfg_from_file(args.cfg_file)
     if args.set_cfgs is not None:
         cfg_from_list(args.set_cfgs)
-
-    # print('Using config:')
+    # print('Config for faster-rcnn:')
     # pprint.pprint(cfg)
 
-    ''' Initialize the fasterRCNN '''
-    # 20 object classes in PascalVOC (plus '__background__')
-    dataset_classes = np.asarray(['__background__', 'aeroplane', 'bicycle', 'bird', 'boat', 'bottle', 'bus', 'car',
-                                  'cat', 'chair', 'cow', 'diningtable', 'dog', 'horse', 'motorbike', 'person',
-                                  'pottedplant', 'sheep', 'sofa', 'train', 'tvmonitor'])
-    if args.net == 'vgg16':
-        fasterRCNN = vgg16(dataset_classes, pretrained=False, class_agnostic=args.class_agnostic)
-    else:
-        print("network is not defined")
-        pdb.set_trace()
-
-    fasterRCNN.create_architecture()
-
-    # The directory for loading pre-trained faster rcnn for extracting rois
-    input_dir = args.load_dir + "/" + args.net + "/" + args.dataset
-    load_name = os.path.join(input_dir,
-                             'best_faster_rcnn_{}_{}_{}.pth'.format(args.checksession, args.checkepoch,
-                                                                    args.checkpoint))
-    if not os.path.exists(load_name):
-        raise Exception('There is no pre-trained model for extracting rois, i.e. ' + load_name)
-
-    # Load parameters for the faster rcnn
-    print("load checkpoint %s" % (load_name))
-    checkpoint = torch.load(load_name)
-    fasterRCNN.load_state_dict(checkpoint['model'])
-    if 'pooling_mode' in checkpoint.keys():
-        cfg.POOLING_MODE = checkpoint['pooling_mode']
-    print('load model successfully!')
-
-    if args.cuda:
-        cfg.CUDA = True
-        fasterRCNN.cuda()
-
-    ''' Initialize the geometric matching model '''
-    # Crop object from image ('object'), feature map of vgg pool4 ('pool4'), feature map of vgg conv1 ('conv1'),
-    # or no cropping ('image')
-    crop_layer = 'image'
-    # Feature extraction network: 1. pre-trained vgg on ImageNet; 2. fine-tuned vgg on PascalVOC2011
-    pretrained = True
-    # Initialize theta_regression module as identity mapping
-    init_identity = True
+    ''' Initialize geometric matching model '''
+    print('Initialize geometric matching model')
+    dual = args.dual
+    resume = args.resume
+    # if args.model_aff != '' and args.model_tps != '':
+    #     dual = True
+    # if args.model != '':
+    #     resume = True
     # Create geometric_matching model
-    print('Creating CNN model...')
-    # Default: args.geometric_model - tps, args.feature_extraction_cnn - vgg
-    model = GeometricMatching(use_cuda=args.cuda, geometric_model=args.geometric_model,
-                              feature_extraction_cnn=args.feature_extraction_cnn, pretrained=pretrained,
-                              crop_layer=crop_layer, init_identity=init_identity)
+    if dual:
+        if args.net == 'vgg16':
+            print('Initialize fasterRCNN module')
+        else:
+            print('FasterRCNN model is not defined')
+            pdb.set_trace()
+        # Crop object from image ('img'), feature map of vgg pool4 ('pool4'), feature map of vgg conv1 ('conv1'), or no cropping (None)
+        # Feature extraction network: 1. pre-trained on ImageNet; 2. fine-tuned on PascalVOC2011, arg_groups['model']['pretrained'] = pretrained
+        # 20 object classes in PascalVOC (plus '__background__')
+        pascal_category = np.asarray(['__background__', 'aeroplane', 'bicycle', 'bird', 'boat', 'bottle', 'bus', 'car',
+                                      'cat', 'chair', 'cow', 'diningtable', 'dog', 'horse', 'motorbike', 'person',
+                                      'pottedplant', 'sheep', 'sofa', 'train', 'tvmonitor'])
+        model = DualGeometricMatching(aff_output_dim=6, tps_output_dim=18, dataset_classes=pascal_category,
+                                      class_agnostic=args.class_agnostic, use_cuda=args.cuda, pretrained=True,
+                                      thresh=0.05, max_per_image=50, crop_layer=None, **arg_groups['model'])
+    else:
+        # Default: args.geometric_model - tps, args.feature_extraction_cnn - vgg
+        if args.geometric_model == 'affine':
+            output_dim = 6
+        elif args.geometric_model == 'tps':
+            output_dim = 18
+        model = GeometricMatching(output_dim=output_dim, use_cuda=args.cuda, pretrained=True, **arg_groups['model'])
+
+    ''' Initialize dual geometric matching model '''
+    if dual and not resume:
+        # Train geometric matching model with computed affine, load pretrained model
+        ''' Set FasterRCNN module '''
+        # The directory for loading pre-trained fasterRCNN for extracting bounding box of objects
+        RCNN_cp_dir = os.path.join(args.load_dir, args.net, args.dataset)
+        RCNN_cp_name = os.path.join(RCNN_cp_dir, 'best_faster_rcnn_{}_{}_{}.pth'.format(args.checksession, args.checkepoch, args.checkpoint))
+        print('Load fasterRCNN model {}'.format(RCNN_cp_name))
+        if not os.path.exists(RCNN_cp_name):
+            raise Exception('There is no pre-trained fasterRCNN model, i.e. {}'.format(RCNN_cp_name))
+        # Load pre-trained parameters for fasterRCNN
+        RCNN_checkpoint = torch.load(RCNN_cp_name, map_location=lambda storage, loc: storage)
+        for name, param in model.FasterRCNN.state_dict().items():
+            model.FasterRCNN.state_dict()[name].copy_(RCNN_checkpoint['model'][name])
+        # model.FasterRCNN.load_state_dict(RCNN_checkpoint['model'])
+        for param in model.FasterRCNN.parameters():
+            param.requires_grad = False
+        if 'pooling_mode' in RCNN_checkpoint.keys():
+            cfg.POOLING_MODE = RCNN_checkpoint['pooling_mode']
+        print('Load fasterRCNN model successfully!')
+        if args.cuda:
+            cfg.CUDA = True
+
+        ''' Set ThetaRegression module '''
+        GM_cp_name_aff = os.path.join(args.trained_models_dir, args.model_aff)
+        if not os.path.exists(GM_cp_name_aff):
+            raise Exception('There is no pre-trained geometric matching affine model, i.e. ' + GM_cp_name_aff)
+        print('Load geometric matching affine model {}'.format(GM_cp_name_aff))
+        GM_checkpoint_aff = torch.load(GM_cp_name_aff, map_location=lambda storage, loc: storage)
+
+        GM_cp_name_tps = os.path.join(args.trained_models_dir, args.model_tps)
+        if not os.path.exists(GM_cp_name_aff):
+            raise Exception('There is no pre-trained geometric matching tps model, i.e. ' + GM_cp_name_tps)
+        print('Load geometric matching tps model {}'.format(GM_cp_name_tps))
+        GM_checkpoint_tps = torch.load(GM_cp_name_tps, map_location=lambda storage, loc: storage)
+        # GM_checkpoint['state_dict'] = OrderedDict(
+        #     [(k.replace('vgg', 'model'), v) for k, v in GM_checkpoint['state_dict'].items()])
+        # GM_checkpoint['state_dict'] = OrderedDict(
+        #     [(k.replace('FeatureRegression', 'ThetaRegression'), v) for k, v in GM_checkpoint['state_dict'].items()])
+        for name, param in model.FeatureExtraction.state_dict().items():
+            model.FeatureExtraction.state_dict()[name].copy_(GM_checkpoint_aff['state_dict']['FeatureExtraction.' + name])
+        for name, param in model.ThetaRegression.state_dict().items():
+            model.ThetaRegression.state_dict()[name].copy_(GM_checkpoint_aff['state_dict']['ThetaRegression.' + name])
+        for name, param in model.ThetaRegression2.state_dict().items():
+            model.ThetaRegression2.state_dict()[name].copy_(GM_checkpoint_tps['state_dict']['ThetaRegression.' + name])
+
+    ''' Resume training geometric matching model '''
+    # If resume training, load interrupted model
+    if resume:
+        print('Resume training')
+        GM_cp_name = os.path.join(args.trained_models_dir, args.model)
+        if not os.path.exists(GM_cp_name):
+            raise Exception('There is no pre-trained geometric matching model, i.e. ' + GM_cp_name)
+        print('Load geometric matching model {}'.format(GM_cp_name))
+        GM_checkpoint = torch.load(GM_cp_name, map_location=lambda storage, loc: storage)
+        model.load_state_dict(GM_checkpoint['state_dict'])
+
+    print('Load geometric matching model successfully!')
+
     if args.cuda:
         model.cuda()
 
     # Default is grid loss (as described in the CVPR 2017 paper)
     if args.use_mse_loss:
-        print('Using MSE loss...')
+        print('Use MSE loss')
         loss = nn.MSELoss()
     else:
-        loss_type = 'loss_1'
-
-        if loss_type == 'loss_1':
-            from geometric_matching.model.loss_new import TransformedGridLoss
-        elif loss_type == 'loss_2':
-            from geometric_matching.model.loss import TransformedGridLoss
-
-        print('Using grid loss...')
+        print('Use grid loss')
         loss = TransformedGridLoss(use_cuda=args.cuda, geometric_model=args.geometric_model)
 
     # Optimizer
     # Only regression part needs training
-    optimizer = optim.Adam(model.ThetaRegression.parameters(), lr=args.lr)
+    # optimizer = optim.Adam(model.ThetaRegression.parameters(), lr=args.lr)
+    if dual:
+        args.lr = 5e-8
+        args.num_epochs = 15
+        for param in model.FasterRCNN.parameters():
+            param.requires_grad = False
+    optimizer = optim.Adam(filter(lambda param: param.requires_grad, model.parameters()), lr=args.lr)
+    if resume:
+        optimizer.load_state_dict(GM_checkpoint['optimizer'])
+    for name, param in model.named_parameters():
+        print(name, param.requires_grad)
 
-    tpsTnf = GeometricTnf(geometric_model='tps', use_cuda=args.cuda)
+    ''' Set training dataset and validation dataset '''
+    # Set path of csv files including image names (source and target) and pre-set random tps
+    if args.geometric_model == 'tps':
+        args.random_t_tps = 0.3
+        csv_file_train, train_dataset_path = get_dataset_csv(dataset_path=args.train_dataset_path, dataset=args.train_dataset, subset='train', random_t_tps=args.random_t_tps)
+    elif args.geometric_model == 'affine':
+        csv_file_train, train_dataset_path = get_dataset_csv(dataset_path=args.train_dataset_path, dataset=args.train_dataset, subset='train', geometric_model=args.geometric_model)
+    print(csv_file_train)
+    csv_file_val, eval_dataset_path = get_dataset_csv(dataset_path=args.eval_dataset_path, dataset=args.eval_dataset, subset='val')
+    output_size = (args.image_size, args.image_size)
+    # Train dataset
+    normalize = NormalizeImageDict(['source_image', 'target_image'])
+    dataset = TrainDataset(csv_file=csv_file_train, dataset_path=train_dataset_path, output_size=output_size,
+                           geometric_model=args.geometric_model, transform=normalize,
+                           random_sample=args.random_sample, random_t_tps=args.random_t_tps)
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
+    # dataloader = torch.utils.data.DataLoader(dataset, batch_size=1, shuffle=False, num_workers=4)
+    triple_generation = TrainTriple(geometric_model=args.geometric_model, output_size=output_size, use_cuda=args.cuda)
+    # Val dataset
+    dataset_val = PFPASCALDataset(csv_file=csv_file_val, dataset_path=eval_dataset_path, output_size=output_size,
+                                  transform=normalize)
+    dataloader_val = torch.utils.data.DataLoader(dataset_val, batch_size=args.batch_size, shuffle=False, num_workers=4)
 
-    ''' Initialize training dataset and validation dataset '''
-    # Set path for pre-set random tps csv files for images
-    args.training_dataset_path = os.path.join(args.training_dataset_path, args.training_dataset)
-    csv_file_train = os.path.join(args.training_dataset_path, 'train_' + args.training_dataset + '.csv')
-    csv_file_val = os.path.join(args.training_dataset_path, 'val_' + args.training_dataset + '.csv')
-    random_t_tps = 0.4
-    if args.training_dataset == 'PascalVOC2011':
-        normalize = NormalizeImageDict(['image'])
-        dataset = SynthDataset(geometric_model=args.geometric_model, csv_file=csv_file_train,
-                               dataset_path=args.training_dataset_path, transform=normalize,
-                               random_sample=args.random_sample)
-        dataloader = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
+    ''' Train and val geometric matching model '''
+    # Define checkpoint name
+    checkpoint_suffix = '_' + args.feature_extraction_cnn
+    if dual:
+        checkpoint_suffix += '_aff_tps'
+    else:
+        checkpoint_suffix += '_' + args.geometric_model
+    checkpoint_suffix += '_' + args.train_dataset
+    if args.geometric_model == 'tps':
+        checkpoint_suffix += '_' + str(args.random_t_tps)
+    checkpoint_name = os.path.join(args.trained_models_dir, args.train_dataset, args.trained_models_fn + checkpoint_suffix + '.pth.tar')
+    print('Checkpoint saving name: {}'.format(checkpoint_name))
 
-        dataset_val = SynthDataset(geometric_model=args.geometric_model, csv_file=csv_file_val,
-                                   dataset_path=args.training_dataset_path,
-                                   transform=normalize, random_sample=args.random_sample)
-        dataloader_val = torch.utils.data.DataLoader(dataset_val, batch_size=args.batch_size, shuffle=True,
-                                                     num_workers=4)
-        # Function for generating training pair
-        pair_generation_tnf = SynthPairTnf(geometric_model=args.geometric_model, use_cuda=args.cuda,
-                                           crop_layer=crop_layer)
-        # Path for saving checkpoint
-        checkpoint_path = os.path.join(args.trained_models_dir, args.training_dataset, crop_layer,
-                                       (lambda x:'pretrained_vgg' if x==True else 'finetuned_vgg')(pretrained),
-                                       (lambda x:'identity' if x==True else 'random')(init_identity))
-
-    elif args.training_dataset == 'PF-PASCAL':
-        normalize = NormalizeImageDict(['source_image', 'target_image'])
-        dataset = TrainDataset(geometric_model=args.geometric_model, csv_file=csv_file_train,
-                                  dataset_path=args.training_dataset_path, transform= normalize,
-                                  random_sample=args.random_sample, random_t_tps=random_t_tps)
-        dataloader = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
-
-        dataset_val = TrainDataset(geometric_model=args.geometric_model, csv_file=csv_file_val,
-                                      dataset_path=args.training_dataset_path, transform= normalize,
-                                      random_sample=args.random_sample, random_t_tps=random_t_tps)
-        dataloader_val = torch.utils.data.DataLoader(dataset_val, batch_size=args.batch_size, shuffle=True,
-                                                     num_workers=4)
-
-        pair_generation_tnf = TrainPairTnf(geometric_model=args.geometric_model, use_cuda=args.cuda,
-                                              crop_layer=crop_layer)
-
-        checkpoint_path = os.path.join(args.trained_models_dir, args.training_dataset, loss_type, crop_layer,
-                                       (lambda x:'identity' if x==True else 'random')(init_identity))
-
-    if not os.path.exists(checkpoint_path):
-        os.makedirs(checkpoint_path)
-
-    ''' Train and val the geometric matching model '''
-    best_val_loss = float("inf")
+    print('Starting training')
+    train_loss = np.zeros(args.num_epochs)
+    val_pck = np.zeros(args.num_epochs)
+    best_val_pck = float('-inf')
+    train_time = np.zeros(args.num_epochs)
+    val_time = np.zeros(args.num_epochs)
     best_epoch = 0
-
-    print('Starting training...')
-
+    if resume:
+        args.start_epoch = GM_checkpoint['epoch']
+        best_val_pck = GM_checkpoint['best_val_pck']
+        train_loss = GM_checkpoint['train_loss']
+        val_pck = GM_checkpoint['val_pck']
+        train_time = GM_checkpoint['train_time']
+        val_time = GM_checkpoint['val_time']
     start = time.time()
-    for epoch in range(1, args.num_epochs + 1):
-        if args.training_dataset == 'PascalVOC2011':
-            if crop_layer == 'pool4':
-                train_loss = train_pool4_synth(epoch, model, fasterRCNN, loss, optimizer, dataloader,
-                                               pair_generation_tnf, log_interval=100, use_cuda=args.cuda)
-                val_loss = val_pool4_synth(model, fasterRCNN, loss, dataloader_val, pair_generation_tnf,
-                                           use_cuda=args.cuda)
-            elif crop_layer == 'object':
-                train_loss = train_object_synth(epoch, model, fasterRCNN, loss, optimizer, dataloader,
-                                                pair_generation_tnf, log_interval=100, use_cuda=args.cuda)
-                val_loss = val_object_synth(model, fasterRCNN, loss, dataloader_val, pair_generation_tnf,
-                                            use_cuda=args.cuda)
-            elif crop_layer == 'image':
-                train_loss = train_image_synth(epoch, model, loss, optimizer, dataloader, pair_generation_tnf, tpsTnf,
-                                               use_cuda=True, log_interval=100)
-                val_loss = val_image_synth(model, loss, dataloader_val, pair_generation_tnf, use_cuda=True)
+    for epoch in range(args.start_epoch, args.num_epochs + 1):
+        model.train()
+        if dual:
+            model.FasterRCNN.eval()
+        train_loss[epoch-1], train_time[epoch-1] = train_fn(epoch=epoch, model=model, loss_fn=loss, optimizer=optimizer,
+                                                            dataloader=dataloader, triple_generation=triple_generation,
+                                                            dual=dual, use_cuda=args.cuda, log_interval=100, show=False)
+        model.eval()
+        results, val_time[epoch-1] = test_fn(model=model, metric='pck', dataset=dataset_val, dataloader=dataloader_val,
+                                             dual=dual, args=args)
+        if dual:
+            val_pck[epoch - 1] = np.mean(results['aff_tps']['pck'])
+        else:
+            if args.geometric_model == 'affine':
+                val_pck[epoch - 1] = np.mean(results['aff']['pck'])
+            elif args.geometric_model == 'tps':
+                val_pck[epoch - 1] = np.mean(results['tps']['pck'])
 
-        elif args.training_dataset == 'PF-PASCAL':
-            if crop_layer == 'pool4':
-                print('Not ok!')
-                # train_loss = train_image_synth(epoch, model, fasterRCNN, loss, optimizer, dataloader,
-                #                                pair_generation_tnf, log_interval=100, use_cuda=args.cuda)
-                # val_loss = val_image_synth(model, fasterRCNN, loss, dataloader_val, pair_generation_tnf,
-                #                            use_cuda=args.cuda)
-            elif crop_layer == 'object':
-                if loss_type == 'loss_1':
-                    train_loss = train_object_pfpascal_1(epoch, model, fasterRCNN, loss, optimizer, dataloader,
-                                                         pair_generation_tnf, tpsTnf, log_interval=100,
-                                                         use_cuda=args.cuda)
-                    val_loss = val_object_pfpascal_1(model, fasterRCNN, loss, dataloader_val, pair_generation_tnf,
-                                                     use_cuda=args.cuda)
-                elif loss_type == 'loss_2':
-                    train_loss = train_object_pfpascal_2(epoch, model, fasterRCNN, loss, optimizer, dataloader,
-                                                         pair_generation_tnf, tpsTnf, log_interval=100, use_cuda=args.cuda)
-                    val_loss = val_object_pfpascal_2(model, fasterRCNN, loss, dataloader_val, pair_generation_tnf, tpsTnf,
-                                                     use_cuda=args.cuda)
-            elif crop_layer == 'image':
-                if loss_type == 'loss_1':
-                    train_loss = train_image_pfpascal_1(epoch, model, loss, optimizer, dataloader, pair_generation_tnf,
-                                                        tpsTnf, log_interval=100, use_cuda=args.cuda)
-                    val_loss = val_image_pfpascal_1(model, loss, dataloader_val, pair_generation_tnf,
-                                                    use_cuda=args.cuda)
-                elif loss_type == 'loss_2':
-                    train_loss = train_image_pfpascal_2(epoch, model, loss, optimizer, dataloader, pair_generation_tnf,
-                                                        tpsTnf, log_interval=100, use_cuda=args.cuda)
-                    val_loss = val_image_pfpascal_2(model, loss, dataloader_val, pair_generation_tnf, tpsTnf,
-                                                    use_cuda=args.cuda)
-
-        # Best loss
-        is_best = val_loss < best_val_loss
+        is_best = val_pck[epoch-1] > best_val_pck
+        best_val_pck = max(val_pck[epoch-1] , best_val_pck)
         if is_best:
             best_epoch = epoch
-        best_val_loss = min(val_loss, best_val_loss)
-        # Name for saving trained model
-        checkpoint_name = os.path.join(checkpoint_path, str(epoch) + '_' + args.trained_models_fn + '_' +
-                                       args.geometric_model + '_grid_loss_' + args.feature_extraction_cnn + '.pth.tar')
+        print('Save checkpoint...')
         save_checkpoint({
             'epoch': epoch + 1,
             'args': args,
             'state_dict': model.state_dict(),
-            'best_val_loss': best_val_loss,
             'optimizer': optimizer.state_dict(),
-        }, checkpoint_name)
+            'best_val_pck': best_val_pck,
+            'train_loss': train_loss,
+            'val_pck': val_pck,
+            'train_time': train_time,
+            'val_time': val_time,
+        }, is_best, checkpoint_name)
     end = time.time()
+    print('Best epoch: {}\t\tBest val pck: {:.2%}\t\tTime cost (total): {:.4f}'.format(best_epoch, best_val_pck, end - start))
 
-    # best_checkpoint_name = os.path.join(checkpoint_path,
-    #                                     str(best_epoch) + '_' + args.trained_models_fn + '_' + args.geometric_model +
-    #                                     '_grid_loss_' + args.feature_extraction_cnn + '.pth.tar')
-    # copy_name = os.path.join(checkpoint_path, 'best_' + str(best_epoch) + '_' + args.trained_models_fn + '_' +
-    #                          args.geometric_model + '_grid_loss_' + args.feature_extraction_cnn + '.pth.tar')
-
-    # Select the best model, and copy
-    # shutil.copyfile(best_checkpoint_name, copy_name)
-    print('Best epoch {:}\t\tBest val loss {:.4f}\t\tTime cost (total) {:.4f}'.format(best_epoch, best_val_loss, end - start))
     print('Done!')
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-'''
-    # The directory for loading pre-trained RoIFeature model and saving trained models
-    output_dir = args.save_dir + "/" + args.net + "/" + args.dataset
-    # print(output_dir)
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-
-    pair_generation_tnf = SynthPairTnf(geometric_model=args.geometric_model, use_cuda=args.cuda)
-
-    # initilize the tensor holder here.
-    im_data = torch.FloatTensor(1)
-    im_info = torch.FloatTensor(1)
-    num_boxes = torch.LongTensor(1)
-    gt_boxes = torch.FloatTensor(1)
-    gt_theta = torch.FloatTensor(1)
-
-    # ship to cuda
-    if args.cuda:
-        im_data = im_data.cuda()
-        im_info = im_info.cuda()
-        num_boxes = num_boxes.cuda()
-        gt_boxes = gt_boxes.cuda()
-        theta = gt_theta.cuda()
-
-    # make variable
-    im_data = Variable(im_data)
-    im_info = Variable(im_info)
-    num_boxes = Variable(num_boxes)
-    gt_boxes = Variable(gt_boxes)
-    gt_theta = Variable(gt_theta)
-
-    if args.cuda:
-        cfg.CUDA = True
-
-    geoRPN = GeometricRPN(geometric_model=args.geometric_model, use_cuda=args.cuda,
-                          pretrained=True, classes=imdb.classes, class_agnostic=args.class_agnostic, select=True)
-
-    # Default is grid loss (as described in the CVPR 2017 paper)
-    if args.use_mse_loss:
-        print('Using MSE loss...')
-        loss_fn = nn.MSELoss()
-    else:
-        print('Using grid loss...')
-        loss_fn = TransformedGridLoss(use_cuda=args.cuda, geometric_model=args.geometric_model)
-
-    load_name = os.path.join(input_dir,
-                             'faster_rcnn_{}_{}_{}.pth'.format(args.checksession, args.checkepoch, args.checkpoint))
-    print("loading geoRPN.RoIFeature checkpoint %s" % (load_name))
-    roi_checkpoint = torch.load(load_name)
-    geoRPN.RoIFeature.load_state_dict(roi_checkpoint['model'])
-    if 'pooling_mode' in roi_checkpoint.keys():
-        cfg.POOLING_MODE = roi_checkpoint['pooling_mode']
-    print("loaded geoRPN.RoIFeature checkpoint %s successfully!" % (load_name))
-
-    if args.optimizer == "adam":
-        optimizer = optim.Adam(filter(lambda p: p.requires_grad, geoRPN.parameters()), lr=args.lr)
-    elif args.optimizer == "sgd":
-        optimizer = optim.SGD(filter(lambda p: p.requires_grad, geoRPN.parameters()), lr=args.lr,
-                              momentum=cfg.TRAIN.MOMENTUM)
-
-    if args.mGPUs:
-        print("Let's use {gpu_nums} GPUs!".format(gpu_nums=torch.cuda.device_count()))
-        geoRPN = nn.DataParallel(geoRPN)
-
-    if args.cuda:
-        geoRPN.cuda()
-
-    iters_per_epoch = int(train_size / args.batch_size)
-
-    for epoch in range(args.start_epoch, args.max_epochs + 1):
-        # setting to train mode
-        geoRPN.train()
-        train_loss = 0
-        loss_temp = 0
-        start = time.time()
-        data_iter = iter(dataloader)
-        for step in range(iters_per_epoch):
-            # im_data: the array data of images, shape (batch_size, channel, N, M), N: resized height, M: resized width
-            # min(N, M) = 600, max(N, M) = max(Q, P) * im_scale
-            # im_info: N, M, im_scale, shape (batch_size, 3)
-            # im_scale = 600 / min(Q, P), Q and P are height and width of the original image
-            # gt_boxes: ground truth bounding boxes of objects in images, shape (batch_size, 20, 5), 5 includes x_min, y_min, x_max, y_max, class
-            # num_boxes: the ground-truth number of boxes in images, shape (batch_size,)
-            data = next(data_iter)
-            im_data.data.resize_(data[0].size()).copy_(data[0])
-            im_info.data.resize_(data[1].size()).copy_(data[1])
-            gt_boxes.data.resize_(data[2].size()).copy_(data[2])
-            num_boxes.data.resize_(data[3].size()).copy_(data[3])
-            gt_theta.data.resize_(data[4].size()).copy_(data[4])
-            # print('lalal')
-
-            im_pair = pair_generation_tnf(im_data, gt_theta)
-
-            geoRPN.zero_grad()
-            optimizer.zero_grad()
-
-            theta = geoRPN(im_pair, im_info, gt_boxes, num_boxes, select=True)
-            # print(theta.shape)
-            # print(im_pair['theta_GT'].shape)
-
-            loss = loss_fn(theta, im_pair['theta_GT'])
-            # print(loss)
-            loss_temp += loss.item()
-            train_loss += loss.item()
-
-            # backward
-            loss.backward()
-            optimizer.step()
-
-            if step % args.disp_interval == 0:
-                end = time.time()
-                if step > 0:
-                    loss_temp /= (args.disp_interval + 1)
-
-                print("[session %d][epoch %2d][iter %4d/%4d] loss: %.4f" \
-                      % (args.session, epoch, step, iters_per_epoch, loss_temp))
-
-                loss_temp = 0
-                start = time.time()
-
-        train_loss /= len(dataloader)
-        print('Train set: Average loss: {:.4f}'.format(train_loss))
-
-        save_name = os.path.join(output_dir, 'geoRPN_adam_tps_grid_loss_vgg16_{}_{}_{}.pth'.format(args.session, epoch, step))
-        save_checkpoint({
-            'session': args.session,
-            'epoch': epoch + 1,
-            'model': geoRPN.module.state_dict() if args.mGPUs else geoRPN.state_dict(),
-            'optimizer': optimizer.state_dict(),
-            'pooling_mode': cfg.POOLING_MODE,
-            'class_agnostic': args.class_agnostic,
-        }, save_name)
-        print('save model: {}'.format(save_name))
-'''
