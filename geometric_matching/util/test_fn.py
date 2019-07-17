@@ -6,28 +6,28 @@ from skimage import draw
 from geometric_matching.geotnf.transformation import GeometricTnf
 from geometric_matching.geotnf.flow import th_sampling_grid_to_np_flow, write_flo_file
 import torch.nn.functional as F
-from geometric_matching.data.pf_pascal_dataset import PFPASCALDataset
-from geometric_matching.data.caltech_dataset import CaltechDataset
+# from geometric_matching.gm_data.pf_pascal_dataset import PFPASCALDataset
+from geometric_matching.gm_data.pf_pascal_dataset2 import PFPASCALDataset2
+# from geometric_matching.gm_data.caltech_dataset import CaltechDataset
 from geometric_matching.geotnf.point_tnf import PointTnf, PointsToUnitCoords, PointsToPixelCoords
 from geometric_matching.geotnf.affine_theta import AffineTheta
 from geometric_matching.util.net_util import *
 import matplotlib
 import matplotlib.pyplot as plt
 
-def test_fn(model=None, metric='pck', dataset=None, dataloader=None, dual=False, args=None):
+def test_fn(model=None, metric='pck', dataset=None, dataloader=None, dual=True, do_aff=False, do_tps=False, args=None):
     # Initialize results
     N = len(dataset)
     results = {}
     # decide which results should be computed aff/tps/aff+tps
-    if dual:
+    if not dual and do_aff:
         results['aff']={}
-        results['aff_tps'] = {}
-    else:
-        if args.geometric_model == 'affine':
-            results['aff'] = {}
-        elif args.geometric_model == 'tps':
-            results['tps'] = {}
-
+    if not dual and do_tps:
+        results['tps'] = {}
+    if dual:
+        results['aff_det'] = {}
+        results['aff_det_aff']={}
+        results['aff_det_aff_tps'] = {}
     # choose metric function and metrics to compute
     if metric == 'pck':
         metrics = ['pck']
@@ -60,20 +60,20 @@ def test_fn(model=None, metric='pck', dataset=None, dataloader=None, dual=False,
         batch_start_idx = args.batch_size * batch_idx
         batch_end_idx = np.minimum(batch_start_idx + args.batch_size, N)
 
-        theta_aff_1 = None
+        theta_aff_det = None
         theta_aff = None
         theta_tps = None
         theta_aff_tps = None
 
+        # theta_aff is predicted by geometric model, theta_aff_det is computed by detection results of faster rcnn
         if dual:
-            theta_aff_tps, theta_aff, theta_aff_1 = model(batch)
-        else:
-            if args.geometric_model == 'affine':
-                theta_aff = model(batch)
-            elif args.geometric_model == 'tps':
-                theta_tps = model(batch)
+            theta_aff_tps, theta_aff, theta_aff_det = model(batch)
+        elif do_aff:
+            theta_aff = model(batch)
+        elif do_tps:
+            theta_tps = model(batch)
 
-        results = metric_fun(batch, batch_start_idx, theta_aff, theta_aff_1, theta_tps, theta_aff_tps, results, args)
+        results = metric_fun(batch, batch_start_idx, theta_aff_det, theta_aff, theta_tps, theta_aff_tps, results, args)
 
         end = time.time()
         print('Batch: [{}/{} ({:.0%})]\t\tTime cost ({} batches): {:.4f} s'.format(batch_idx+1, len(dataloader), (batch_idx+1) / len(dataloader), batch_idx + 1, end - begin))
@@ -90,7 +90,7 @@ def test_fn(model=None, metric='pck', dataset=None, dataloader=None, dual=False,
         for metric in metrics:
             # print per-class brakedown for PFPascal, or caltech
             # if isinstance(dataset, PFPASCALDataset) or isinstance(dataset, CaltechDataset):
-            if isinstance(dataset, PFPASCALDataset):
+            if isinstance(dataset, PFPASCALDataset2):
                 N_cat = int(np.max(dataset.categories))  # Number of categories in dataset (PF-PASCAL or Caltech-101)
                 for c in range(N_cat):
                     cat_idx = np.nonzero(dataset.categories == c + 1)[0]  # Compute indices of current category
@@ -125,30 +125,36 @@ def pck(source_points, warped_points, L_pck, alpha=0.1):
         pck[i] = torch.mean(correct_points.float())
     return pck
 
-def pck_metric(batch, batch_start_idx, theta_aff, theta_aff_1, theta_tps, theta_aff_tps, results, args):
+def pck_metric(batch, batch_start_idx, theta_aff_det, theta_aff, theta_tps, theta_aff_tps, results, args):
     alpha = args.pck_alpha
+    do_aff_det = theta_aff_det is not None
     do_aff = theta_aff is not None
     do_tps = theta_tps is not None
     do_aff_tps = theta_aff_tps is not None
 
-    source_im_size = batch['source_im_size']
-    target_im_size = batch['target_im_size']
+    source_im_size = batch['source_im_info'][:, 0:3]
+    target_im_size = batch['target_im_info'][:, 0:3]
 
     source_points = batch['source_points']
     target_points = batch['target_points']
 
     # Instantiate point transformer
-    # pt = PointTnf(use_cuda=use_cuda, tps_reg_factor=args.tps_reg_factor)
-    pt = PointTnf(use_cuda=args.cuda)
+    pt = PointTnf(use_cuda=args.cuda, tps_reg_factor=args.tps_reg_factor)
+    # pt = PointTnf(use_cuda=args.cuda)
 
     # warp points with estimated transformations
     target_points_norm = PointsToUnitCoords(P=target_points, im_size=target_im_size)
 
+    if do_aff_det:
+        # Affine transformation only based on object detection
+        warped_points_aff_det_norm = pt.affPointTnf(theta=theta_aff_det, points=target_points_norm)
+        warped_points_aff_det = PointsToPixelCoords(P=warped_points_aff_det_norm, im_size=source_im_size)
+
     if do_aff:
         # do affine only
         warped_points_aff_norm = pt.affPointTnf(theta=theta_aff, points=target_points_norm)
-        if theta_aff_1 is not None:
-            warped_points_aff_norm = pt.affPointTnf(theta=theta_aff_1, points=warped_points_aff_norm)
+        if do_aff_det:
+            warped_points_aff_norm = pt.affPointTnf(theta=theta_aff_det, points=warped_points_aff_norm)
         warped_points_aff = PointsToPixelCoords(P=warped_points_aff_norm, im_size=source_im_size)
 
     if do_tps:
@@ -160,15 +166,17 @@ def pck_metric(batch, batch_start_idx, theta_aff, theta_aff_1, theta_tps, theta_
         # do tps+affine
         warped_points_aff_tps_norm = pt.tpsPointTnf(theta=theta_aff_tps, points=target_points_norm)
         warped_points_aff_tps_norm = pt.affPointTnf(theta=theta_aff, points=warped_points_aff_tps_norm)
-        warped_points_aff_tps_norm = pt.affPointTnf(theta=theta_aff_1, points=warped_points_aff_tps_norm)
+        warped_points_aff_tps_norm = pt.affPointTnf(theta=theta_aff_det, points=warped_points_aff_tps_norm)
         warped_points_aff_tps = PointsToPixelCoords(P=warped_points_aff_tps_norm, im_size=source_im_size)
 
     L_pck = batch['L_pck']
 
-    current_batch_size = batch['source_im_size'].size(0)
+    current_batch_size = batch['source_im_info'].size(0)
     indices = range(batch_start_idx, batch_start_idx + current_batch_size)
 
     # import pdb; pdb.set_trace()
+    if do_aff_det:
+        pck_aff_det = pck(source_points, warped_points_aff_det, L_pck, alpha)
 
     if do_aff:
         pck_aff = pck(source_points, warped_points_aff, L_pck, alpha)
@@ -179,30 +187,36 @@ def pck_metric(batch, batch_start_idx, theta_aff, theta_aff_1, theta_tps, theta_
     if do_aff_tps:
         pck_aff_tps = pck(source_points, warped_points_aff_tps, L_pck, alpha)
 
+    if do_aff_det:
+        results['aff_det']['pck'][indices] = pck_aff_det.unsqueeze(1).cpu().numpy()
     if do_aff:
-        results['aff']['pck'][indices] = pck_aff.unsqueeze(1).cpu().numpy()
+        aff_key = 'aff'
+        if do_aff_det:
+            aff_key = 'aff_det_aff'
+        results[aff_key]['pck'][indices] = pck_aff.unsqueeze(1).cpu().numpy()
     if do_tps:
         results['tps']['pck'][indices] = pck_tps.unsqueeze(1).cpu().numpy()
     if do_aff_tps:
-        results['aff_tps']['pck'][indices] = pck_aff_tps.unsqueeze(1).cpu().numpy()
+        results['aff_det_aff_tps']['pck'][indices] = pck_aff_tps.unsqueeze(1).cpu().numpy()
 
     return results
 
-def area_metrics(batch, batch_start_idx, theta_aff, theta_aff_1, theta_tps, theta_aff_tps, results, args):
+def area_metrics(batch, batch_start_idx, theta_aff_det, theta_aff, theta_tps, theta_aff_tps, results, args):
+    do_aff_det = theta_aff_det is not None
     do_aff = theta_aff is not None
     do_tps = theta_tps is not None
     do_aff_tps = theta_aff_tps is not None
 
-    batch_size = batch['source_im_size'].size(0)
+    batch_size = batch['source_im_info'].size(0)
 
     pt = PointTnf(use_cuda=args.cuda)
 
     for b in range(batch_size):
         # Get H, W of source and target image
-        h_src = int(batch['source_im_size'][b, 0].cpu().numpy())
-        w_src = int(batch['source_im_size'][b, 1].cpu().numpy())
-        h_tgt = int(batch['target_im_size'][b, 0].cpu().numpy())
-        w_tgt = int(batch['target_im_size'][b, 1].cpu().numpy())
+        h_src = int(batch['source_im_info'][b, 0].cpu().numpy())
+        w_src = int(batch['source_im_info'][b, 1].cpu().numpy())
+        h_tgt = int(batch['target_im_info'][b, 0].cpu().numpy())
+        w_tgt = int(batch['target_im_info'][b, 1].cpu().numpy())
 
         # Transform annotated polygon to mask using given coordinates of key points
         # target_mask_np.shape: (h_tgt, w_tgt), target_mask.shape: (1, 1, h_tgt, w_tgt)
@@ -216,8 +230,8 @@ def area_metrics(batch, batch_start_idx, theta_aff, theta_aff_1, theta_tps, thet
         # Generate grid for warping
         grid_X, grid_Y = np.meshgrid(np.linspace(-1, 1, w_tgt), np.linspace(-1, 1, h_tgt))
         # grid_X, grid_Y.shape: (1, h_tgt, w_tgt, 1)
-        grid_X = torch.Tensor(grid_X).unsqueeze(0).unsqueeze(3)
-        grid_Y = torch.Tensor(grid_Y).unsqueeze(0).unsqueeze(3)
+        grid_X = torch.Tensor(grid_X.astype(np.float32)).unsqueeze(0).unsqueeze(3)
+        grid_Y = torch.Tensor(grid_Y.astype(np.float32)).unsqueeze(0).unsqueeze(3)
         grid_X.requires_grad = False
         grid_Y.requires_grad = False
         if args.cuda:
@@ -235,14 +249,30 @@ def area_metrics(batch, batch_start_idx, theta_aff, theta_aff_1, theta_tps, thet
 
         idx = batch_start_idx + b
 
+        if do_aff_det:
+            grid_aff_det = pointsToGrid(pt.affPointTnf(theta=theta_aff_det[b, :].unsqueeze(0), points=grid_XY_vec))
+            warped_mask_aff_det = F.grid_sample(source_mask, grid_aff_det)
+            flow_aff_det = th_sampling_grid_to_np_flow(source_grid=grid_aff_det, h_src=h_src, w_src=w_src)
+
+            results['aff_det']['intersection_over_union'][idx] = intersection_over_union(warped_mask=warped_mask_aff_det, target_mask=target_mask)
+            results['aff_det']['label_transfer_accuracy'][idx] = label_transfer_accuracy(warped_mask=warped_mask_aff_det, target_mask=target_mask)
+            results['aff_det']['localization_error'][idx] = localization_error(source_mask_np=source_mask_np, target_mask_np=target_mask_np, flow_np=flow_aff_det)
+
         if do_aff:
-            grid_aff = pointsToGrid(pt.affPointTnf(theta=theta_aff[b, :].unsqueeze(0), points=grid_XY_vec))
+            aff_key = 'aff'
+            if do_aff_det:
+                aff_key = 'aff_det_aff'
+                grid_aff = pointsToGrid(pt.affPointTnf(theta=theta_aff_det[b, :].unsqueeze(0),
+                                                       points=pt.affPointTnf(theta=theta_aff[b, :].unsqueeze(0),
+                                                                             points=grid_XY_vec)))
+            else:
+                grid_aff = pointsToGrid(pt.affPointTnf(theta=theta_aff[b, :].unsqueeze(0), points=grid_XY_vec))
             warped_mask_aff = F.grid_sample(source_mask, grid_aff)            
             flow_aff = th_sampling_grid_to_np_flow(source_grid=grid_aff, h_src=h_src, w_src=w_src)
 
-            results['aff']['intersection_over_union'][idx] = intersection_over_union(warped_mask=warped_mask_aff, target_mask=target_mask)
-            results['aff']['label_transfer_accuracy'][idx] = label_transfer_accuracy(warped_mask=warped_mask_aff, target_mask=target_mask)
-            results['aff']['localization_error'][idx] = localization_error(source_mask_np=source_mask_np, target_mask_np=target_mask_np, flow_np=flow_aff)
+            results[aff_key]['intersection_over_union'][idx] = intersection_over_union(warped_mask=warped_mask_aff, target_mask=target_mask)
+            results[aff_key]['label_transfer_accuracy'][idx] = label_transfer_accuracy(warped_mask=warped_mask_aff, target_mask=target_mask)
+            results[aff_key]['localization_error'][idx] = localization_error(source_mask_np=source_mask_np, target_mask_np=target_mask_np, flow_np=flow_aff)
 
         if do_tps:
             # Get sampling grid with predicted TPS parameters, grid_tps.shape: (1, h_tgt, w_tgt, 2)
@@ -256,32 +286,36 @@ def area_metrics(batch, batch_start_idx, theta_aff, theta_aff_1, theta_tps, thet
             results['tps']['localization_error'][idx] = localization_error(source_mask_np=source_mask_np, target_mask_np=target_mask_np, flow_np=flow_tps)
 
         if do_aff_tps:
-            grid_aff_tps = pointsToGrid(pt.affPointTnf(theta=theta_aff[b,:].unsqueeze(0), points=pt.tpsPointTnf(theta=theta_aff_tps[b,:].unsqueeze(0), points=grid_XY_vec)))
+            grid_aff_tps = pointsToGrid(pt.affPointTnf(theta=theta_aff_det[b, :].unsqueeze(0),
+                                                       points=pt.affPointTnf(theta=theta_aff[b,:].unsqueeze(0),
+                                                                             points=pt.tpsPointTnf(theta=theta_aff_tps[b,:].unsqueeze(0),
+                                                                                                   points=grid_XY_vec))))
             warped_mask_aff_tps = F.grid_sample(source_mask, grid_aff_tps)
             flow_aff_tps = th_sampling_grid_to_np_flow(source_grid=grid_aff_tps, h_src=h_src, w_src=w_src)
 
-            results['aff_tps']['intersection_over_union'][idx] = intersection_over_union(warped_mask=warped_mask_aff_tps, target_mask=target_mask)
-            results['aff_tps']['label_transfer_accuracy'][idx] = label_transfer_accuracy(warped_mask=warped_mask_aff_tps, target_mask=target_mask)
-            results['aff_tps']['localization_error'][idx] = localization_error(source_mask_np=source_mask_np, target_mask_np=target_mask_np, flow_np=flow_aff_tps)
+            results['aff_det_aff_tps']['intersection_over_union'][idx] = intersection_over_union(warped_mask=warped_mask_aff_tps, target_mask=target_mask)
+            results['aff_det_aff_tps']['label_transfer_accuracy'][idx] = label_transfer_accuracy(warped_mask=warped_mask_aff_tps, target_mask=target_mask)
+            results['aff_det_aff_tps']['localization_error'][idx] = localization_error(source_mask_np=source_mask_np, target_mask_np=target_mask_np, flow_np=flow_aff_tps)
 
     return results
 
-def flow_metrics(batch, batch_start_idx, theta_aff, theta_aff_1, theta_tps, theta_aff_tps, results, args):
+def flow_metrics(batch, batch_start_idx, theta_aff_det, theta_aff, theta_tps, theta_aff_tps, results, args):
     result_path = args.flow_output_dir
 
+    do_aff_det = theta_aff_det is not None
     do_aff = theta_aff is not None
     do_tps = theta_tps is not None
     do_aff_tps = theta_aff_tps is not None
 
     pt = PointTnf(use_cuda=args.cuda)
 
-    batch_size = batch['source_im_size'].size(0)
+    batch_size = batch['source_im_info'].size(0)
     for b in range(batch_size):
         # Get H, W of source and target image
-        h_src = int(batch['source_im_size'][b, 0].cpu().numpy())
-        w_src = int(batch['source_im_size'][b, 1].cpu().numpy())
-        h_tgt = int(batch['target_im_size'][b, 0].cpu().numpy())
-        w_tgt = int(batch['target_im_size'][b, 1].cpu().numpy())
+        h_src = int(batch['source_im_info'][b, 0].cpu().numpy())
+        w_src = int(batch['source_im_info'][b, 1].cpu().numpy())
+        h_tgt = int(batch['target_im_info'][b, 0].cpu().numpy())
+        w_tgt = int(batch['target_im_info'][b, 1].cpu().numpy())
 
         # Generate grid for warping
         grid_X, grid_Y = np.meshgrid(np.linspace(-1, 1, w_tgt), np.linspace(-1, 1, h_tgt))
@@ -305,12 +339,26 @@ def flow_metrics(batch, batch_start_idx, theta_aff, theta_aff_1, theta_tps, thet
 
         idx = batch_start_idx + b
 
+        if do_aff_det:
+            grid_aff_det = pointsToGrid(pt.affPointTnf(theta=theta_aff_det[b,:].unsqueeze(0), points=grid_XY_vec))
+            flow_aff_det = th_sampling_grid_to_np_flow(source_grid=grid_aff_det, h_src=h_src, w_src=w_src)
+            flow_aff_det_path = os.path.join(result_path, 'aff_det', batch['flow_path'][b])
+            create_file_path(flow_aff_det_path)
+            write_flo_file(flow_aff_det, flow_aff_det_path)
+
         if do_aff:
-            grid_aff = pointsToGrid(pt.affPointTnf(theta=theta_aff[b,:].unsqueeze(0), points=grid_XY_vec))
+            aff_key = 'aff'
+            if do_aff_det:
+                aff_key = 'aff_det_aff'
+                grid_aff = pointsToGrid(pt.affPointTnf(theta=theta_aff_det[b, :].unsqueeze(0),
+                                                       points=pt.affPointTnf(theta=theta_aff[b, :].unsqueeze(0), points=grid_XY_vec)))
+            else:
+                grid_aff = pointsToGrid(pt.affPointTnf(theta=theta_aff[b, :].unsqueeze(0), points=grid_XY_vec))
             flow_aff = th_sampling_grid_to_np_flow(source_grid=grid_aff, h_src=h_src, w_src=w_src)
-            flow_aff_path = os.path.join(result_path, 'aff', batch['flow_path'][b])
+            flow_aff_path = os.path.join(result_path, aff_key, batch['flow_path'][b])
             create_file_path(flow_aff_path)
-            write_flo_file(flow_aff,flow_aff_path)
+            write_flo_file(flow_aff, flow_aff_path)
+
         if do_tps:
             # Get sampling grid with predicted TPS parameters, grid_tps.shape: (1, h_tgt, w_tgt, 2)
             grid_tps = pointsToGrid(pt.tpsPointTnf(theta=theta_tps[b, :].unsqueeze(0), points=grid_XY_vec))
@@ -319,12 +367,16 @@ def flow_metrics(batch, batch_start_idx, theta_aff, theta_aff_1, theta_tps, thet
             flow_tps_path = os.path.join(result_path, 'tps', batch['flow_path'][b])
             create_file_path(flow_tps_path)
             write_flo_file(flow_tps, flow_tps_path)
+
         if do_aff_tps:
-            grid_aff_tps = pointsToGrid(pt.affPointTnf(theta=theta_aff[b,:].unsqueeze(0), points=pt.tpsPointTnf(theta=theta_aff_tps[b,:].unsqueeze(0), points=grid_XY_vec)))
+            grid_aff_tps = pointsToGrid(pt.affPointTnf(theta=theta_aff_det[b,:].unsqueeze(0),
+                                                       points=pt.affPointTnf(theta=theta_aff[b,:].unsqueeze(0),
+                                                                             points=pt.tpsPointTnf(theta=theta_aff_tps[b,:].unsqueeze(0),
+                                                                                                   points=grid_XY_vec))))
             flow_aff_tps = th_sampling_grid_to_np_flow(source_grid=grid_aff_tps,h_src=h_src,w_src=w_src)
-            flow_aff_tps_path = os.path.join(result_path, 'aff_tps', batch['flow_path'][b])
+            flow_aff_tps_path = os.path.join(result_path, 'aff_det_aff_tps', batch['flow_path'][b])
             create_file_path(flow_aff_tps_path)
-            write_flo_file(flow_aff_tps,flow_aff_tps_path)
+            write_flo_file(flow_aff_tps, flow_aff_tps_path)
 
         idx = batch_start_idx+b
 

@@ -5,8 +5,8 @@ from skimage import draw
 from geometric_matching.geotnf.transformation import GeometricTnf
 # from geotnf.flow import th_sampling_grid_to_np_flow, write_flo_file
 import torch.nn.functional as F
-from geometric_matching.data.pf_willow_dataset import PFWILLOWDataset
-from geometric_matching.data.pf_pascal_dataset import PFPASCALDataset
+from geometric_matching.gm_data.pf_willow_dataset import PFWILLOWDataset
+from geometric_matching.gm_data.pf_pascal_dataset import PFPASCALDataset
 # from data.caltech_dataset import CaltechDataset
 from torch.autograd import Variable
 from geometric_matching.geotnf.point_tnf import PointTnf, PointsToUnitCoords, PointsToPixelCoords

@@ -29,13 +29,13 @@ from skimage import io
 import cv2
 
 from geometric_matching.arguments.arguments_setting import Arguments
-from geometric_matching.model.dual_geometric_matching import DualGeometricMatching
-from geometric_matching.model.geometric_matching import GeometricMatching
+from geometric_matching.gm_model.dual_geometric_matching import DualGeometricMatching
+from geometric_matching.gm_model.geometric_matching import GeometricMatching
 from geometric_matching.image.normalization import *
-from geometric_matching.data.pf_willow_dataset import PFWILLOWDataset
-from geometric_matching.data.pf_pascal_dataset import PFPASCALDataset
-from geometric_matching.data.caltech_dataset import CaltechDataset
-from geometric_matching.data.tss_dataset import TSSDataset
+from geometric_matching.gm_data.pf_willow_dataset import PFWILLOWDataset
+from geometric_matching.gm_data.pf_pascal_dataset import PFPASCALDataset
+from geometric_matching.gm_data.caltech_dataset import CaltechDataset
+from geometric_matching.gm_data.tss_dataset import TSSDataset
 from geometric_matching.util.net_util import *
 from geometric_matching.util.test_fn import *
 from geometric_matching.geotnf.transformation import *

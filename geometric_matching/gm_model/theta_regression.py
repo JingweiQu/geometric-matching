@@ -7,8 +7,7 @@ class ThetaRegression(nn.Module):
     Do regression to tnf parameters theta
     theta.shape: (batch_size, 18) for tps, (batch_size, 6) for affine
     """
-    def __init__(self, output_dim=6, use_cuda=True, batch_normalization=True, kernel_sizes=[7, 5],
-                 channels=[128, 64], feature_size=15):
+    def __init__(self, output_dim=6, batch_normalization=True, kernel_sizes=[7, 5], channels=[128, 64], feature_size=15):
         super(ThetaRegression, self).__init__()
         num_layers = len(kernel_sizes)
         nn_modules = list()
@@ -35,9 +34,6 @@ class ThetaRegression(nn.Module):
         elif output_dim == 6:
             self.linear.weight.data.normal_(0, 1e-6)
             self.linear.bias.data.copy_(torch.Tensor([1, 0, 0, 0, 1, 0]))
-        # if use_cuda:
-        #     self.conv.cuda()
-        #     self.linear.cuda()
 
     def forward(self, x):
         # x.shape: (batch_size, 225, 15, 15)

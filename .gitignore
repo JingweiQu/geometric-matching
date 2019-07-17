@@ -18,13 +18,11 @@ gen
 /images/
 /lib/
 /models/
-/trainval.py
+/faster_rcnn_trainval.py
 /requirements.txt
 /LICENSE
 /demo.py
-/test.py
+/faster_rcnn_test.py
 /_init_paths.py
 /README.md
-/trainval_net.py
-/test_net.py
 /tmp.py

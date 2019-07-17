@@ -1,7 +1,7 @@
 from __future__ import print_function, division
 import torch
 import torch.nn as nn
-from geometric_matching.model.featureL2norm import FeatureL2Norm
+from geometric_matching.gm_model.featureL2norm import FeatureL2Norm
 
 class FeatureCorrelation(nn.Module):
     """

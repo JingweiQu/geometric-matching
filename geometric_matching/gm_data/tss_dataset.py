@@ -9,6 +9,7 @@ import os
 import torch
 from torch.autograd import Variable
 from skimage import io
+import cv2
 import pandas as pd
 import numpy as np
 from torch.utils.data import Dataset
@@ -36,7 +37,7 @@ class TSSDataset(Dataset):
                'source_num_boxes' & 'target_num_boxes': number of ground-truth bounding boxes, set to 0}
     """
 
-    def __init__(self, csv_file, dataset_path, output_size=(240,240), transform=None):
+    def __init__(self, csv_file, dataset_path, output_size=(240,240), normalize=None):
         self.dataframe = pd.read_csv(csv_file)  # Read images data
         self.img_A_names = self.dataframe.iloc[:, 0]    # Get source image & target image name
         self.img_B_names = self.dataframe.iloc[:, 1]
@@ -45,7 +46,7 @@ class TSSDataset(Dataset):
         self.pair_category = self.dataframe.iloc[:, 4].values.astype('int')
         self.dataset_path = dataset_path
         self.out_h, self.out_w = output_size
-        self.transform = transform
+        self.normalize = normalize
         # Initialize an affine transformation to resize the image to (240, 240)
         self.affineTnf = GeometricTnf(geometric_model='affine', out_h=self.out_h, out_w=self.out_w, use_cuda=False)
               
@@ -55,35 +56,42 @@ class TSSDataset(Dataset):
     def __getitem__(self, idx):
         # get pre-processed images
         flip_img_A = self.flip_img_A[idx]
-        image_A, im_size_A, im_A, im_info_A, gt_boxes_A, num_boxes_A = self.get_image(img_name_list=self.img_A_names,
-                                                                                      idx=idx, flip=flip_img_A)
-        image_B, im_size_B, im_B, im_info_B, gt_boxes_B, num_boxes_B = self.get_image(img_name_list=self.img_B_names,
-                                                                                      idx=idx)
+        if self.normalize is not None:
+            image_A, im_A, im_info_A, gt_boxes_A, num_boxes_A = self.get_image(img_name_list=self.img_A_names, idx=idx, flip=flip_img_A)
+            image_B, im_B, im_info_B, gt_boxes_B, num_boxes_B = self.get_image(img_name_list=self.img_B_names, idx=idx)
+        else:
+            image_A, im_info_A, gt_boxes_A, num_boxes_A = self.get_image(img_name_list=self.img_A_names, idx=idx, flip=flip_img_A)
+            image_B, im_info_B, gt_boxes_B, num_boxes_B = self.get_image(img_name_list=self.img_B_names, idx=idx)
 
         # get flow output path
         flow_path = self.get_GT_flow_relative_path(idx)
 
         sample = {'source_image': image_A, 'target_image': image_B,
-                  'source_im_size': im_size_A, 'target_im_size': im_size_B,
-                  'flow_path': flow_path,
-                  'source_im': im_A, 'target_im': im_B,
                   'source_im_info': im_info_A, 'target_im_info': im_info_B,
                   'source_gt_boxes': gt_boxes_A, 'target_gt_boxes': gt_boxes_B,
-                  'source_num_boxes': num_boxes_A, 'target_num_boxes': num_boxes_B}
+                  'source_num_boxes': num_boxes_A, 'target_num_boxes': num_boxes_B,
+                  'flow_path': flow_path}
         
         # # get ground-truth flow
         # flow = self.get_GT_flow(idx)
         
         # sample = {'source_image': image_A, 'target_image': image_B, 'source_im_size': im_size_A, 'target_im_size': im_size_B, 'flow_GT': flow}
         
-        if self.transform:
-            sample = self.transform(sample)
+        if self.normalize is not None:
+            sample = {'source_image': image_A, 'target_image': image_B,
+                      'source_im': im_A, 'target_im': im_B,
+                      'source_im_info': im_info_A, 'target_im_info': im_info_B,
+                      'source_gt_boxes': gt_boxes_A, 'target_gt_boxes': gt_boxes_B,
+                      'source_num_boxes': num_boxes_A, 'target_num_boxes': num_boxes_B,
+                      'flow_path': flow_path}
+            sample = self.normalize(sample)
 
         return sample
 
     def get_image(self, img_name_list, idx, flip=False):
         img_name = os.path.join(self.dataset_path, img_name_list[idx])
-        image = io.imread(img_name)
+        # image = io.imread(img_name)
+        image = cv2.imread(img_name)
         # If the image just has two channels, add one channel
         if len(image.shape) == 2:
             image = image[:, :, np.newaxis]
@@ -91,24 +99,27 @@ class TSSDataset(Dataset):
             
         # Flip horizontally
         if flip:
-            image = np.flip(image, axis=1)
+            image = image[:, ::-1, :]
             
         # get image size
         im_size = np.asarray(image.shape)
+        im_size = torch.Tensor(im_size.astype(np.float32))
+        im_size.requires_grad = False
 
         # Get tensors of image, image_info (H, W, im_scale), ground-truth boxes, number of boxes for faster rcnn
-        im, im_info, gt_boxes, num_boxes = roi_data(image)
+        im, im_info, gt_boxes, num_boxes = roi_data(image, self.out_h)
+        im_info = torch.cat((im_size, im_info), 0)
 
-        # Transform numpy to tensor, permute order of image to CHW
-        image = torch.Tensor(image.astype(np.float32))
-        image = image.permute(2, 0, 1)
-        im_size = torch.Tensor(im_size.astype(np.float32))
+        if self.normalize is not None:
+            # Transform numpy to tensor, permute order of image to CHW
+            image = torch.Tensor(image.astype(np.float32))
+            image = image.permute(2, 0, 1)  # For following normalization
+            # Resize image using bilinear sampling with identity affine tnf
+            image.requires_grad = False
+            image = self.affineTnf(image_batch=image.unsqueeze(0)).squeeze(0)
+            return image, im, im_info, gt_boxes, num_boxes
 
-        # Resize image using bilinear sampling with identity affine tnf
-        image.requires_grad = False
-        image = self.affineTnf(image_batch=image.unsqueeze(0)).squeeze(0)
-        
-        return image, im_size, im, im_info, gt_boxes, num_boxes
+        return im, im_info, gt_boxes, num_boxes
 
     def get_GT_flow(self,idx):
         img_folder = os.path.dirname(self.img_A_names[idx])

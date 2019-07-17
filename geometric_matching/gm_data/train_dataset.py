@@ -8,14 +8,13 @@ import torch
 import os
 from os.path import exists, join, basename
 from skimage import io
+from scipy.misc import imread
+import cv2
 import pandas as pd
 import numpy as np
 from torch.utils.data import Dataset
 from geometric_matching.geotnf.transformation import GeometricTnf
 from geometric_matching.util.net_util import roi_data
-
-import matplotlib
-import matplotlib.pyplot as plt
 
 class TrainDataset(Dataset):
     """
@@ -25,7 +24,7 @@ class TrainDataset(Dataset):
             csv_file (string): Path to the csv file with image names and transformations
             dataset_path (string): Directory with all the images
             output_size (2-tuple): Desired output size
-            transform (callable): Transformation for post-processing the training pair (eg. image normalization)
+            normalize (callable): Normalization for post-processing the training pair
 
     Returns:
             Dict: {'source_image' & 'target_image': images for transformation,
@@ -38,7 +37,8 @@ class TrainDataset(Dataset):
     """
 
     def __init__(self, csv_file, dataset_path, output_size=(240, 240), geometric_model='affine', dataset_size=0,
-                 transform=None, random_sample=False, random_t=0.5, random_s=0.5, random_alpha=1 / 6, random_t_tps=0.4):
+                 normalize=None, random_sample=False, random_t=0.5, random_s=0.5, random_alpha=1 / 6, random_t_tps=0.4,
+                 random_crop=False):
         self.dataframe = pd.read_csv(csv_file)  # Read images data
         if dataset_size != 0:
             dataset_size = min((dataset_size, len(self.dataframe)))
@@ -49,16 +49,17 @@ class TrainDataset(Dataset):
         self.flips = self.dataframe.iloc[:, 3].values.astype('int')
         self.random_sample = random_sample
         if not self.random_sample:
+            print(csv_file)
             self.theta_array = self.dataframe.iloc[:, 4:].values.astype('float')  # Get ground-truth tps parameters
         self.dataset_path = dataset_path  # Path for reading images
         self.out_h, self.out_w = output_size
         self.geometric_model = geometric_model
-        self.transform = transform
+        self.normalize = normalize
         self.random_t = random_t
         self.random_s = random_s
         self.random_alpha = random_alpha
         self.random_t_tps = random_t_tps
-        # self.extension = '.jpg'
+        self.random_crop = random_crop
         # Initialize an affine transformation to resize the image to (240, 240)
         self.affineTnf = GeometricTnf(geometric_model='affine', out_h=self.out_h, out_w=self.out_w, use_cuda=False)
 
@@ -66,9 +67,14 @@ class TrainDataset(Dataset):
         return len(self.dataframe)
 
     def __getitem__(self, idx):
+        flip = self.flips[idx]
         # Read image, and get image information for fasterRCNN
-        image_A, im_size_A, im_A, im_info_A, gt_boxes_A, num_boxes_A = self.get_image(img_name_list=self.img_A_names, idx=idx)
-        image_B, im_size_B, im_B, im_info_B, gt_boxes_B, num_boxes_B = self.get_image(img_name_list=self.img_B_names, idx=idx)
+        if self.normalize is not None:
+            image_A, im_A, im_info_A, gt_boxes_A, num_boxes_A = self.get_image(img_name_list=self.img_A_names, idx=idx, flip=flip)
+            image_B, im_B, im_info_B, gt_boxes_B, num_boxes_B = self.get_image(img_name_list=self.img_B_names, idx=idx, flip=flip)
+        else:
+            image_A, im_info_A, gt_boxes_A, num_boxes_A = self.get_image(img_name_list=self.img_A_names, idx=idx, flip=flip)
+            image_B, im_info_B, gt_boxes_B, num_boxes_B = self.get_image(img_name_list=self.img_B_names, idx=idx, flip=flip)
 
         # Read theta
         if not self.random_sample:
@@ -106,52 +112,66 @@ class TrainDataset(Dataset):
         theta = torch.Tensor(theta.astype(np.float32))
 
         sample = {'source_image': image_A, 'target_image': image_B,
-                  'source_im_size': im_size_A, 'target_im_size': im_size_B,
-                  'theta_GT': theta,
-                  'source_im': im_A, 'target_im': im_B,
                   'source_im_info': im_info_A, 'target_im_info': im_info_B,
                   'source_gt_boxes': gt_boxes_A, 'target_gt_boxes': gt_boxes_B,
-                  'source_num_boxes': num_boxes_A, 'target_num_boxes': num_boxes_B}
+                  'source_num_boxes': num_boxes_A, 'target_num_boxes': num_boxes_B,
+                  'theta_GT': theta}
 
-        if self.transform:
-            sample = self.transform(sample)
+        if self.normalize is not None:
+            # sample = {'source_image': image_A, 'target_image': image_B,
+            #           'source_im': im_A, 'target_im': im_B,
+            #           'source_im_info': im_info_A, 'target_im_info': im_info_B,
+            #           'source_gt_boxes': gt_boxes_A, 'target_gt_boxes': gt_boxes_B,
+            #           'source_num_boxes': num_boxes_A, 'target_num_boxes': num_boxes_B,
+            #           'theta_GT': theta}
+            sample = {'source_image': image_A, 'target_image': image_B,
+                      'theta_GT': theta}
+            sample = self.normalize(sample)
 
         return sample
 
-    def get_image(self, img_name_list, idx):
+    def get_image(self, img_name_list, idx, flip=False):
         img_name = os.path.join(self.dataset_path, img_name_list[idx])
-        image = io.imread(img_name)
+        # image = io.imread(img_name)
+        image = cv2.imread(img_name)  # cv2: channel is BGR
         # If the image just has two channels, add one channel
         if len(image.shape) == 2:
             image = image[:, :, np.newaxis]
             image = np.concatenate((image, image, image), axis=2)
 
-        # h, w, c = image.shape
-        # top = np.random.randint(h / 4)
-        # bottom = int(3 * h / 4 + np.random.randint(h / 4))
-        # left = np.random.randint(w / 4)
-        # right = int(3 * w / 4 + np.random.randint(w / 4))
-        # image = image[top:bottom, left:right, :]
+        # do random crop
+        if self.random_crop:
+            h, w, c = image.shape
+            top = np.random.randint(h / 4)
+            bottom = int(3 * h / 4 + np.random.randint(h / 4))
+            left = np.random.randint(w / 4)
+            right = int(3 * w / 4 + np.random.randint(w / 4))
+            image = image[top:bottom, left:right, :]
 
         # Flip horizontally
-        if self.flips[idx]:
-            image = np.flip(image, axis=1)
-            # file_name = basename(img_name)
-            # io.imsave('/home/qujingwei/geometric-matching/geometric_matching/'+file_name, image)
-            # print(img_name)
+        if flip:
+            image = image[:, ::-1, :]
 
+        # Get image size, (H, W, C)
         im_size = np.asarray(image.shape)
+        im_size = torch.Tensor(im_size.astype(np.float32))
+        im_size.requires_grad = False
 
         # Get tensors of image, image_info (H, W, im_scale), ground-truth boxes, number of boxes for faster rcnn
-        im, im_info, gt_boxes, num_boxes = roi_data(image)
+        im, im_info, gt_boxes, num_boxes = roi_data(image, self.out_h)
+        im_info = torch.cat((im_size, im_info), 0)
 
-        # Transform numpy to tensor, permute order of image to CHW
-        image = torch.Tensor(image.astype(np.float32))
-        image = image.permute(2, 0, 1)
-        im_size = torch.Tensor(im_size)
+        if self.normalize is not None:
+            # Transform numpy to tensor, permute order of image to CHW
+            image = image[:, :, ::-1]   # BGR -> RGB, due to cv2
+            # image = image.astype(np.float32, copy=False)
+            # image = cv2.resize(image, dsize=(self.out_w, self.out_h), interpolation=cv2.INTER_LINEAR)
+            # image = torch.Tensor(image)
+            image = torch.Tensor(image.astype(np.float32))
+            image = image.permute(2, 0, 1)  # For following normalization
+            # Resize image using bilinear sampling with identity affine tnf
+            image.requires_grad = False
+            image = self.affineTnf(image_batch=image.unsqueeze(0)).squeeze(0)
+            return image, im, im_info, gt_boxes, num_boxes
 
-        # Resize image using bilinear sampling with identity affine tnf
-        image.requires_grad = False
-        image = self.affineTnf(image_batch=image.unsqueeze(0)).squeeze(0)
-
-        return image, im_size, im, im_info, gt_boxes, num_boxes
+        return im, im_info, gt_boxes, num_boxes

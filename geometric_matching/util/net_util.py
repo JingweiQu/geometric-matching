@@ -17,7 +17,7 @@ import collections
 import numpy as np
 import xml.etree.ElementTree as ET
 
-from lib.model.utils.blob import prep_im_for_blob_2
+from lib.model.utils.blob import prep_im_for_blob
 from lib.model.rpn.bbox_transform import *
 from lib.model.roi_layers import nms
 
@@ -89,6 +89,8 @@ def save_checkpoint(state, is_best, file):
     # Select the best model, and copy
     if is_best:
         shutil.copyfile(file, join(model_dir, 'best_' + model_fn))
+        # shutil.copyfile(file, join(model_dir, 'best_gm_tps_0.4.pth.tar'))
+        # shutil.copyfile(file, join(model_dir, 'best_gm_affine.pth.tar'))
 
 def str_to_bool(v):
     """ Transform string to bool """
@@ -104,25 +106,30 @@ def expand_dim(tensor,dim,desired_dim_len):
     sz[dim]=desired_dim_len
     return tensor.expand(tuple(sz))
 
-def roi_data(image):
+def roi_data(image, target_size=240):
     """ Prepare the input of faster rcnn for detecting objects """
     # flip the channel, since the original one using cv2
     # rgb -> bgr
-    image = image[:, :, ::-1]
+    # image = image[:, :, ::-1]
 
     # Pixel mean values (BGR order) as a (1, 1, 3) array
     # We use the same pixel mean for all networks even though it's not exactly what
     # they were trained with
     pixel_means = np.array([[[102.9801, 115.9465, 122.7717]]])
-    image, im_scale = prep_im_for_blob_2(im=image, pixel_means=pixel_means, target_size=240)
+    image, im_scale = prep_im_for_blob(im=image, pixel_means=pixel_means, target_size=target_size, max_size=0, normalize=None)
     im_info = np.array([image.shape[0], image.shape[1], im_scale], dtype=np.float32)
 
     # numpy to tensor
     image = torch.Tensor(image.astype(np.float32))
     image = image.permute(2, 0, 1)
     im_info = torch.Tensor(im_info)
-    gt_boxes = torch.Tensor([1, 1, 1, 1, 1])
-    num_boxes = 0
+    gt_boxes = torch.ones(5, dtype=torch.float32)
+    num_boxes = torch.LongTensor([0])
+
+    image.requires_grad = False
+    im_info.requires_grad = False
+    gt_boxes.requires_grad = False
+    num_boxes.requires_grad = False
 
     return image, im_info, gt_boxes, num_boxes
 
