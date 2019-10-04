@@ -6,7 +6,9 @@
 
 from __future__ import print_function, division
 import torch
+import torchvision
 import time
+import cv2
 
 from geometric_matching.geotnf.transformation import GeometricTnf
 from geometric_matching.util.net_util import *
@@ -71,26 +73,29 @@ def show_images(batch_st, batch_tr, warped_image=None, warped_image_2=None, warp
         plt.show()
 
 
-def add_watch(watch_images, batch_st, batch_tr, geoTnf, theta_st, theta_tr, k):
-    warped_image_st = geoTnf(batch_st['source_image'][0].unsqueeze(0), theta_st[0].unsqueeze(0)).squeeze(0)
-    warped_image_tr = geoTnf(batch_tr['source_image'][0].unsqueeze(0), theta_tr[0].unsqueeze(0)).squeeze(0)
-    warped_image_sr = geoTnf(warped_image_st.unsqueeze(0), theta_tr[0].unsqueeze(0)).squeeze(0)
-    watch_images[k] = batch_st['source_image'][0]
-    watch_images[k + 1] = warped_image_st.detach()
-    watch_images[k + 2] = batch_st['target_image'][0]
+def add_watch(watch_images, image_names, batch_st, batch_tr, geoTnf, theta_st, theta_tr, k):
+    warped_image_st = geoTnf(batch_st['source_image'][0].unsqueeze(0), theta_st[0].unsqueeze(0))
+    warped_image_tr = geoTnf(batch_tr['source_image'][0].unsqueeze(0), theta_tr[0].unsqueeze(0))
+    warped_image_sr = geoTnf(warped_image_st, theta_tr[0].unsqueeze(0))
 
-    watch_images[k + 3] = batch_tr['source_image'][0]
-    watch_images[k + 4] = warped_image_tr.detach()
-    watch_images[k + 5] = batch_tr['target_image'][0]
+    watch_images[k, :, 0:240, :] = batch_st['source_image'][0]
+    watch_images[k + 1, :, 0:240, :] = warped_image_st.detach()
+    watch_images[k + 2, :, 0:240, :] = batch_st['target_image'][0]
+    watch_images[k + 3, :, 0:240, :] = warped_image_tr.detach()
+    watch_images[k + 4, :, 0:240, :] = batch_tr['target_image'][0]
+    watch_images[k + 5, :, 0:240, :] = warped_image_sr.detach()
 
-    watch_images[k + 6] = batch_st['source_image'][0]
-    watch_images[k + 7] = warped_image_sr.detach()
-    watch_images[k + 8] = batch_tr['target_image'][0]
+    image_names.append('Source')
+    image_names.append('Warped_st')
+    image_names.append('Target')
+    image_names.append('Warped_tr')
+    image_names.append('Refer')
+    image_names.append('Warped_sr')
 
-    return watch_images
+    return watch_images, image_names
 
-def train_fn(epoch, model, loss_fn, optimizer, dataloader, triple_generation, geometric_model='tps', dual=True,
-             use_cuda=True, log_interval=100, vis=None, normalize=None, show=False):
+def train_fn(epoch, model, loss_fn, optimizer, dataloader, triple_generation, geometric_model='tps', use_cuda=True,
+             log_interval=100, vis=None, show=False):
     """
         Train the model with synthetically training triple:
         {source image, target image, refer image (warped source image), theta_GT} from PF-PASCAL.
@@ -100,17 +105,18 @@ def train_fn(epoch, model, loss_fn, optimizer, dataloader, triple_generation, ge
         theta and theta_GT.
     """
 
-    # tpsTnf = GeometricTnf(geometric_model='tps', use_cuda=use_cuda)
-    # affTnf = GeometricTnf(geometric_model='affine', use_cuda=use_cuda)
     geoTnf = GeometricTnf(geometric_model=geometric_model, use_cuda=use_cuda)
     epoch_loss = 0
     if (epoch % 5 == 0 or epoch == 1) and vis is not None:
         stride_images = len(dataloader) / 3
-        watch_images = torch.Tensor(36, 3, 240, 240)
-        if normalize is None:
-            pixel_means = torch.Tensor(np.array([[[[102.9801, 115.9465, 122.7717]]]]).astype(np.float32))
-        stride_loss = len(dataloader) / 35
-        iter_loss = np.zeros(36)
+        group_size = 6
+        watch_images = torch.ones(group_size * 4, 3, 260, 240).cuda()
+        image_names = list()
+        fnt = cv2.FONT_HERSHEY_COMPLEX
+        # means for normalize of caffe resnet and vgg
+        # pixel_means = torch.Tensor(np.array([[[[102.9801, 115.9465, 122.7717]]]]).astype(np.float32)).cuda()
+        stride_loss = len(dataloader) / 105
+        iter_loss = np.zeros(106)
     begin = time.time()
     for batch_idx, batch in enumerate(dataloader):
         ''' Move input batch to gpu '''
@@ -120,23 +126,17 @@ def train_fn(epoch, model, loss_fn, optimizer, dataloader, triple_generation, ge
             batch = batch_cuda(batch)
 
         ''' Get the training triple {source image, target image, refer image (warped source image), theta_GT}'''
-        batch_st, batch_tr, theta_GT = triple_generation(batch)
+        batch_triple = triple_generation(batch)
 
         ''' Train the model '''
         optimizer.zero_grad()
         # Predict tps parameters between images
-        # theta.shape: (batch_size, 18) for tps
-        if dual:
-            theta_aff_tps_st, theta_aff_st, theta_aff_st_1 = model(batch_st)  # from source image to target image
-            theta_aff_tps_tr, theta_aff_tr, theta_aff_tr_1 = model(batch_tr)  # from target image to refer image
-            # theta_aff_tps_st, theta_aff_st, theta_aff_st_1, box_s, box_t = model(batch_st)  # from source image to target image
-            # theta_aff_tps_tr, theta_aff_tr, theta_aff_tr_1, box_t, box_r = model(batch_tr)  # from target image to refer image
-            # show_images(batch_st=batch_st, batch_tr=batch_tr, box_s=box_s, box_t=box_t, box_r=box_r)
-            loss = loss_fn(theta_st=theta_aff_tps_st, theta_tr=theta_aff_tps_tr, theta_GT=theta_GT)
-        else:
-            theta_st = model(batch_st)  # from source image to target image
-            theta_tr = model(batch_tr)  # from target image to refer image
-            loss = loss_fn(theta_st=theta_st, theta_tr=theta_tr, theta_GT=theta_GT)
+        # theta.shape: (batch_size, 18) for tps, theta.shape: (batch_size, 6) for affine
+        batch_st = {'source_image': batch_triple['source_image'], 'target_image': batch_triple['target_image']}
+        batch_tr = {'source_image': batch_triple['target_image'], 'target_image': batch_triple['refer_image']}
+        theta_st = model(batch_st)  # from source image to target image
+        theta_tr = model(batch_tr)  # from target image to refer image
+        loss = loss_fn(theta_st=theta_st, theta_tr=theta_tr, theta_GT=batch_triple['theta_GT'])
         loss.backward()
         optimizer.step()
         epoch_loss += loss.item()
@@ -147,7 +147,7 @@ def train_fn(epoch, model, loss_fn, optimizer, dataloader, triple_generation, ge
 
         if (epoch % 5 == 0 or epoch == 1) and vis is not None:
             if (batch_idx + 1) % stride_images == 0 or batch_idx == 0:
-                watch_images = add_watch(watch_images, batch_st, batch_tr, geoTnf, theta_st, theta_tr, int((batch_idx + 1) / stride_images) * 9)
+                watch_images, image_names = add_watch(watch_images, image_names, batch_st, batch_tr, geoTnf, theta_st, theta_tr, int((batch_idx + 1) / stride_images) * group_size)
             if (batch_idx + 1) % stride_loss == 0 or batch_idx == 0:
                 iter_loss[int((batch_idx + 1) / stride_loss)] = epoch_loss / (batch_idx + 1)
 
@@ -196,21 +196,25 @@ def train_fn(epoch, model, loss_fn, optimizer, dataloader, triple_generation, ge
 
     # Visualize watch images & train loss
     if (epoch % 5 == 0 or epoch == 1) and vis is not None:
-        opts = dict(jpgquality=100,
-                    title='Epoch ' + str(epoch) + ' source warped_sr target || target warped_tr refer || source warped_sr refer')
-        if normalize is None:
-            watch_images = watch_images.permute(0, 2, 3, 1) + pixel_means
-            watch_images = watch_images[:, :, :, [2, 1, 0]].permute(0, 3, 1, 2)
-        else:
-            watch_images = normalize_image(watch_images, forward=False) * 255.0
-        vis.images(watch_images, nrow=9, padding=3, opts=opts)
+        opts = dict(jpgquality=100, title='Epoch ' + str(epoch) + ' source warped_sr target warped_tr refer warped_sr')
+        watch_images[:, :, 0:240, :] = normalize_image(watch_images[:, :, 0:240, :], forward=False)
+        watch_images *= 255.0
+        watch_images = watch_images.permute(0, 2, 3, 1).cpu().numpy().astype(np.uint8)
+        for i in range(watch_images.shape[0]):
+            cv2.putText(watch_images[i], image_names[i], (80, 255), fnt, 0.5, (0, 0, 0), 1)
+        watch_images = torch.Tensor(watch_images.astype(np.float32))
+        watch_images = watch_images.permute(0, 3, 1, 2)
+        vis.image(torchvision.utils.make_grid(watch_images, nrow=group_size, padding=3), opts=opts)
+        # Un-normalize for caffe resnet and vgg
+        # watch_images = watch_images.permute(0, 2, 3, 1) + pixel_means
+        # watch_images = watch_images[:, :, :, [2, 1, 0]].permute(0, 3, 1, 2)
 
         opts_loss = dict(xlabel='Iterations (' + str(stride_loss) + ')',
                          ylabel='Loss',
                          title='GM ResNet101 ' + geometric_model + ' Training Loss in Epoch ' + str(epoch),
                          legend=['Loss'],
                          width=2000)
-        vis.line(iter_loss, np.arange(36), opts=opts_loss)
+        vis.line(iter_loss, np.arange(106), opts=opts_loss)
 
     epoch_loss /= len(dataloader)
     print('Train set -- Average loss: {:.6f}\t\tTime cost: {:.4f}'.format(epoch_loss, end - begin))

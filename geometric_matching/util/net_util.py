@@ -41,7 +41,7 @@ def get_dataset_csv(dataset_path=None, dataset=None, subset=None, geometric_mode
     dataset_path = os.path.join(dataset_path, dataset)
     if random_t_tps is not None:
         dataset = dataset + '_' + str(random_t_tps)
-    if subset == 'train':
+    if subset == 'train' or subset == 'finetune':
         dataset = geometric_model + '_' + dataset
     csv_file = os.path.join(dataset_path, subset + '_' + dataset + '.csv')
 
@@ -89,8 +89,6 @@ def save_checkpoint(state, is_best, file):
     # Select the best model, and copy
     if is_best:
         shutil.copyfile(file, join(model_dir, 'best_' + model_fn))
-        # shutil.copyfile(file, join(model_dir, 'best_gm_tps_0.4.pth.tar'))
-        # shutil.copyfile(file, join(model_dir, 'best_gm_affine.pth.tar'))
 
 def str_to_bool(v):
     """ Transform string to bool """
@@ -101,7 +99,7 @@ def str_to_bool(v):
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
-def expand_dim(tensor,dim,desired_dim_len):
+def expand_dim(tensor, dim, desired_dim_len):
     sz = list(tensor.size())
     sz[dim]=desired_dim_len
     return tensor.expand(tuple(sz))
@@ -133,7 +131,7 @@ def roi_data(image, target_size=240):
 
     return image, im_info, gt_boxes, num_boxes
 
-def select_boxes(rois, cls_prob, bbox_pred, im_infos, thresh=0.05, max_per_image=50):
+def select_boxes(rois, cls_prob, bbox_pred, im_infos, thresh=0.05, max_per_image=5):
     """ Select bounding boxes of objects from the predicted results of faster rcnn """
     n_classes = cls_prob.shape[2]
     all_boxes = []
@@ -147,6 +145,8 @@ def select_boxes(rois, cls_prob, bbox_pred, im_infos, thresh=0.05, max_per_image
         bbox_normalize_stds = (0.1, 0.1, 0.2, 0.2)
         box_deltas = box_deltas.view(-1, 4) * torch.Tensor(bbox_normalize_stds).cuda() \
                      + torch.Tensor(bbox_normalize_means).cuda()
+        # box_deltas = box_deltas.view(-1, 4) * torch.Tensor(bbox_normalize_stds) \
+        #              + torch.Tensor(bbox_normalize_means)
         # 21 is the number of classed in pascal voc datasets
         box_deltas = box_deltas.view(1, -1, 4 * n_classes)
 
@@ -184,10 +184,12 @@ def select_boxes(rois, cls_prob, bbox_pred, im_infos, thresh=0.05, max_per_image
 
                 # Concatenate the class ids of boxes
                 class_id = torch.ones(cls_dets.shape[0], 1, dtype=torch.float).cuda() * j
+                # class_id = torch.ones(cls_dets.shape[0], 1, dtype=torch.float) * j
                 cls_dets = torch.cat((cls_dets, class_id), dim=1)
                 # Add each box
                 for i in range(cls_dets.shape[0]):
                     all_box.append(cls_dets[i, :].cpu().detach().numpy())
+                    # all_box.append(cls_dets[i, :].detach().numpy())
 
         all_box = np.array(all_box)
         if all_box.shape[0] != 0:
@@ -207,35 +209,65 @@ def select_boxes(rois, cls_prob, bbox_pred, im_infos, thresh=0.05, max_per_image
 
     return all_boxes
 
-def select_box(all_boxes_s, all_boxes_t):
+def select_box(all_boxes_s, all_boxes_t, all_boxes_r):
     """ Select the object bounding box from the selected bounding boxes """
-    # boxes_s = torch.Tensor(len(all_boxes_s), 4).zero_() - 1
-    # boxes_t = torch.Tensor(len(all_boxes_t), 4).zero_() - 1
+    boxes_s = torch.Tensor(len(all_boxes_s), 6).zero_() - 1
+    boxes_t = torch.Tensor(len(all_boxes_t), 6).zero_() - 1
+    boxes_r = torch.Tensor(len(all_boxes_r), 6).zero_() - 1
+    for j in range(len(all_boxes_s)):
+        all_box_s = all_boxes_s[j]
+        all_box_t = all_boxes_t[j]
+        all_box_r = all_boxes_r[j]
+        if all_box_s.shape[0] != 0 and all_box_t.shape[0] != 0 and all_box_r.shape[0] != 0:
+            class_s = all_box_s[:, 5].astype(np.int32)
+            class_t = all_box_t[:, 5].astype(np.int32)
+            class_r = all_box_r[:, 5].astype(np.int32)
+            for i in range(class_s.shape[0]):
+                keep_t = np.where(class_t == class_s[i])[0]
+                keep_r = np.where(class_r == class_s[i])[0]
+                if keep_t.size != 0 and keep_r.size != 0:
+                    boxes_s[j, :] = torch.Tensor(all_box_s[i, :])
+                    boxes_t[j, :] = torch.Tensor(all_box_t[keep_t[0], :])
+                    boxes_r[j, :] = torch.Tensor(all_box_r[keep_r[0], :])
+                    break
+
+    return boxes_s, boxes_t, boxes_r
+
+def select_box_st(all_boxes_s, all_boxes_t):
+    """ Select the object bounding box from the selected bounding boxes """
     boxes_s = torch.Tensor(len(all_boxes_s), 6).zero_() - 1
     boxes_t = torch.Tensor(len(all_boxes_t), 6).zero_() - 1
     for j in range(len(all_boxes_s)):
-        # box_s = np.ones(4, dtype=np.float) * -1
-        # box_t = np.ones(4, dtype=np.float) * -1
-        box_s = np.ones(6, dtype=np.float) * -1
-        box_t = np.ones(6, dtype=np.float) * -1
         all_box_s = all_boxes_s[j]
         all_box_t = all_boxes_t[j]
         if all_box_s.shape[0] != 0 and all_box_t.shape[0] != 0:
             class_s = all_box_s[:, 5].astype(np.int32)
-            class_ids = all_box_t[:, 5].astype(np.int32)
+            class_t = all_box_t[:, 5].astype(np.int32)
             for i in range(class_s.shape[0]):
-                keep = np.where(class_ids == class_s[i])[0]
-                if keep.size != 0:
-                    # box_s = all_box_s[i, :4]
-                    # box_t = all_box_t[keep[0], :4]
-                    box_s = all_box_s[i, :]
-                    box_t = all_box_t[keep[0], :]
+                keep_t = np.where(class_t == class_s[i])[0]
+                if keep_t.size != 0:
+                    boxes_s[j, :] = torch.Tensor(all_box_s[i, :])
+                    boxes_t[j, :] = torch.Tensor(all_box_t[keep_t[0], :])
                     break
 
-        boxes_s[j, :] = torch.Tensor(box_s)
-        boxes_t[j, :] = torch.Tensor(box_t)
-
     return boxes_s, boxes_t
+
+def select_box_tr(all_boxes_t, all_boxes_r, id):
+    """ Select the object bounding box from the selected bounding boxes """
+    boxes_t = torch.Tensor(len(all_boxes_t), 6).zero_() - 1
+    boxes_r = torch.Tensor(len(all_boxes_r), 6).zero_() - 1
+    for j in range(len(all_boxes_t)):
+        all_box_t = all_boxes_t[j]
+        all_box_r = all_boxes_r[j]
+        if int(id[j].item()) != -1:
+            boxes_t[j, :] = torch.Tensor(all_box_t[int(id[j].item()), :])
+            if all_box_r.shape[0] != 0:
+                class_ids = all_box_r[:, 5].astype(np.int32)
+                keep = np.where(class_ids == int(boxes_t[j, 5].item()))[0]
+                if keep.size != 0:
+                    boxes_r[j, :] = torch.Tensor(all_box_r[keep[0], :])
+
+    return boxes_t, boxes_r, torch.Tensor([-1])
 
 '''
 def select_box(all_boxes_s, all_boxes_t):
@@ -321,13 +353,15 @@ def show_boxes(ax, boxes):
 
         if boxes.shape[1] == 6:
             for i in range(boxes.shape[0]):
-                rect = plt.Rectangle((boxes[i, 0], boxes[i, 1]), widths[i], heights[i], fill=False, edgecolor='r', linewidth=2)
-                ax.add_patch(rect)
-                plt.text(boxes[i, 0], boxes[i, 1], dataset_classes[int(boxes[i, 5])] + ' ' + '%.3f' % boxes[i, 4], fontsize=16, color='g')
+                if torch.sum(boxes[i, 0:4]).item() > 0:
+                    rect = plt.Rectangle((boxes[i, 0], boxes[i, 1]), widths[i], heights[i], fill=False, edgecolor='r', linewidth=2)
+                    ax.add_patch(rect)
+                    plt.text(boxes[i, 0], boxes[i, 1], dataset_classes[int(boxes[i, 5])] + ' ' + '%.3f' % boxes[i, 4], fontsize=16, color='g')
                 # break
         elif boxes.shape[1] == 4:
-            rect = plt.Rectangle((boxes[:, 0], boxes[:, 1]), widths, heights, fill=False, edgecolor='r', linewidth=2)
-            ax.add_patch(rect)
+            if torch.sum(boxes[i, 0:4]).item() > 0:
+                rect = plt.Rectangle((boxes[:, 0], boxes[:, 1]), widths, heights, fill=False, edgecolor='r', linewidth=2)
+                ax.add_patch(rect)
     else:
         print('No object is detected')
 

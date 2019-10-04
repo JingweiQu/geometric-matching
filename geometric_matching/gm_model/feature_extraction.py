@@ -68,6 +68,7 @@ class FeatureExtraction(nn.Module):
 
         if feature_extraction_cnn == 'resnet101':
             if pytorch:
+                print('Use Image-net pre-trained ResNet101')
                 resnet = models.resnet101(pretrained=True)
             else:
                 resnet = models.resnet101()

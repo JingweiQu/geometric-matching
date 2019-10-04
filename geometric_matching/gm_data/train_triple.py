@@ -11,7 +11,7 @@ import numpy as np
 import torch
 
 from geometric_matching.geotnf.transformation import GeometricTnf
-from geometric_matching.util.net_util import roi_data
+# from geometric_matching.util.net_util import roi_data
 from geometric_matching.image.normalization import normalize_image
 
 class TrainTriple(object):
@@ -31,8 +31,7 @@ class TrainTriple(object):
         #     self.rescalingTnf = GeometricTnf(geometric_model='affine', out_h=self.out_h, out_w=self.out_w,
         #                                      use_cuda=self.use_cuda)
         # Initialize geometric transformation (tps or affine) to warp the image to form the training pair
-        self.geometricTnf = GeometricTnf(geometric_model=geometric_model, out_h=self.out_h, out_w=self.out_w,
-                                         use_cuda=self.use_cuda)
+        self.geometricTnf = GeometricTnf(geometric_model=geometric_model, out_h=self.out_h, out_w=self.out_w, use_cuda=self.use_cuda)
         # self.rescalingTnf = GeometricTnf(geometric_model='affine', out_h=self.out_h, out_w=self.out_w,
         #                                  use_cuda=self.use_cuda)
 
@@ -74,50 +73,30 @@ class TrainTriple(object):
         warped_image_batch = self.geometricTnf(image_batch=padded_image_batch, theta_batch=theta_batch,
                                                padding_factor=self.padding_factor, crop_factor=self.crop_factor)
 
-        if self.normalize is not None:
-            # Get the refer im for extracting rois
-            tmp_image_batch = normalize_image(image=warped_image_batch, forward=False) * 255.0
-            tmp_image_batch = tmp_image_batch.cpu().numpy().transpose((0, 2, 3, 1))
-            tmp_image_batch = tmp_image_batch[:, :, :, ::-1]    # RGB -> BGR
-            warped_im_batch = torch.zeros_like(warped_image_batch, dtype=torch.float32)
-            for i in range(tmp_image_batch.shape[0]):
-                warped_im_batch[i] = roi_data(tmp_image_batch[i])[0]
-            warped_im_batch.requires_grad = False
-
-            # return {'source_image': img_A_batch, 'target_image': img_B_batch,
-            #         'source_im': batch['source_im'], 'target_im': batch['target_im'],
-            #         'source_im_info': batch['source_im_info'], 'target_im_info': batch['target_im_info'],
-            #         'source_gt_boxes': batch['source_gt_boxes'], 'target_gt_boxes': batch['target_gt_boxes'],
-            #         'source_num_boxes': batch['source_num_boxes'], 'target_num_boxes': batch['target_num_boxes']}, \
-            #        {'source_image': img_B_batch, 'target_image': warped_image_batch,
-            #         'source_im': batch['target_im'], 'target_im': warped_im_batch,
-            #         'source_im_info': batch['target_im_info'], 'target_im_info': batch['source_im_info'],
-            #         'source_gt_boxes': batch['target_gt_boxes'], 'target_gt_boxes': batch['source_gt_boxes'],
-            #         'source_num_boxes': batch['target_num_boxes'], 'target_num_boxes': batch['source_num_boxes']}, \
-            #        theta_batch
-            return {'source_image': img_A_batch, 'target_image': img_B_batch}, \
-                   {'source_image': img_B_batch, 'target_image': warped_image_batch}, \
-                   theta_batch
+        # Get the refer im for extracting rois
+        # tmp_image_batch = normalize_image(image=warped_image_batch, forward=False) * 255.0
+        # tmp_image_batch = tmp_image_batch.cpu().numpy().transpose((0, 2, 3, 1))
+        # tmp_image_batch = tmp_image_batch[:, :, :, ::-1]    # RGB -> BGR
+        # warped_im_batch = torch.zeros_like(warped_image_batch, dtype=torch.float32)
+        # for i in range(tmp_image_batch.shape[0]):
+        #     warped_im_batch[i] = roi_data(tmp_image_batch[i])[0]
+        # warped_im_batch = warped_im_batch.cuda()
+        # warped_im_batch.requires_grad = False
 
         # img_A_batch.shape, img_B_batch.shape, warped_image_batch.shape: (batch_size, 3, 240, 240)
         # theta_batch.shape-tps: (batch_size, 18)-random or (batch_size, 18, 1, 1)-(pre-set from csv)
         # theta_batch.shape-affine: (batch_size, 2, 3)
-        return {'source_image': img_A_batch, 'target_image': img_B_batch,
-                'source_im_info': batch['source_im_info'], 'target_im_info': batch['target_im_info'],
-                'source_gt_boxes': batch['source_gt_boxes'], 'target_gt_boxes': batch['target_gt_boxes'],
-                'source_num_boxes': batch['source_num_boxes'], 'target_num_boxes': batch['target_num_boxes']}, \
-               {'source_image': img_B_batch, 'target_image': warped_image_batch,
-                'source_im_info': batch['target_im_info'], 'target_im_info': batch['source_im_info'],
-                'source_gt_boxes': batch['target_gt_boxes'], 'target_gt_boxes': batch['source_gt_boxes'],
-                'source_num_boxes': batch['target_num_boxes'], 'target_num_boxes': batch['source_num_boxes']}, \
-               theta_batch
-
         # return {'source_image': img_A_batch, 'target_image': img_B_batch, 'refer_image': warped_image_batch,
-        #         'theta_GT': theta_batch,
         #         'source_im': batch['source_im'], 'target_im': batch['target_im'], 'refer_im': warped_im_batch,
         #         'source_im_info': batch['source_im_info'], 'target_im_info': batch['target_im_info'], 'refer_im_info': batch['source_im_info'],
         #         'source_gt_boxes': batch['source_gt_boxes'], 'target_gt_boxes': batch['target_gt_boxes'], 'refer_gt_boxes': batch['source_gt_boxes'],
-        #         'source_num_boxes': batch['source_num_boxes'], 'target_num_boxes': batch['target_num_boxes'], 'refer_num_boxes': batch['source_num_boxes']}
+        #         'source_num_boxes': batch['source_num_boxes'], 'target_num_boxes': batch['target_num_boxes'], 'refer_num_boxes': batch['source_num_boxes'],
+        #         'theta_GT': theta_batch}
+
+        return {'source_image': img_A_batch, 'target_image': img_B_batch, 'refer_image': warped_image_batch,
+                'source_im_info': batch['source_im_info'], 'target_im_info': batch['target_im_info'],
+                'refer_im_info': batch['source_im_info'],
+                'theta_GT': theta_batch}
 
     def symmetricImagePad(self, image_batch, padding_factor):
         b, c, h, w = image_batch.size()

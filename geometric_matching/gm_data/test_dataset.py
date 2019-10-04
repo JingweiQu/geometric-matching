@@ -69,21 +69,19 @@ class TestDataset(Dataset):
         im_size = torch.Tensor(im_size.astype(np.float32))
         im_size.requires_grad = False
 
+        im_info = im_size
+
         # Get tensors of image, image_info (H, W, im_scale), ground-truth boxes, number of boxes for faster rcnn
-        im, im_info, gt_boxes, num_boxes = roi_data(image, self.out_h)
-        im_info = torch.cat((im_size, im_info), 0)
+        # im, im_info, gt_boxes, num_boxes = roi_data(image, self.out_h)
+        # im_info = torch.cat((im_size, im_info), 0)
 
-        if self.normalize is not None:
-            # Transform numpy to tensor, permute order of image to CHW
-            image = image[:, :, ::-1]   # BGR -> RGB, due to cv2
-            # image = image.astype(np.float32, copy=False)
-            # image = cv2.resize(image, dsize=(self.out_w, self.out_h), interpolation=cv2.INTER_LINEAR)
-            # image = torch.Tensor(image)
-            image = torch.Tensor(image.astype(np.float32))
-            image = image.permute(2, 0, 1)  # For following normalization
-            # Resize image using bilinear sampling with identity affine tnf
-            image.requires_grad = False
-            image = self.affineTnf(image_batch=image.unsqueeze(0)).squeeze(0)
-            return image, im, im_info, gt_boxes, num_boxes
-
-        return im, im_info, gt_boxes, num_boxes
+        # Transform numpy to tensor, permute order of image to CHW
+        image = image[:, :, ::-1]   # BGR -> RGB, due to cv2
+        image = torch.Tensor(image.astype(np.float32))
+        image = image.permute(2, 0, 1)  # For following normalization
+        # Resize image using bilinear sampling with identity affine tnf
+        image.requires_grad = False
+        image = self.affineTnf(image_batch=image.unsqueeze(0)).squeeze(0)
+        
+        # return image, im, im_info, gt_boxes, num_boxes
+        return image, im_info

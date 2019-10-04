@@ -8,13 +8,13 @@ import torch
 import os
 from os.path import exists, join, basename
 from skimage import io
-from scipy.misc import imread
+# from scipy.misc import imread
 import cv2
 import pandas as pd
 import numpy as np
 from torch.utils.data import Dataset
 from geometric_matching.geotnf.transformation import GeometricTnf
-from geometric_matching.util.net_util import roi_data
+# from geometric_matching.util.net_util import roi_data
 
 class TrainDataset(Dataset):
     """
@@ -49,7 +49,6 @@ class TrainDataset(Dataset):
         self.flips = self.dataframe.iloc[:, 3].values.astype('int')
         self.random_sample = random_sample
         if not self.random_sample:
-            print(csv_file)
             self.theta_array = self.dataframe.iloc[:, 4:].values.astype('float')  # Get ground-truth tps parameters
         self.dataset_path = dataset_path  # Path for reading images
         self.out_h, self.out_w = output_size
@@ -69,12 +68,11 @@ class TrainDataset(Dataset):
     def __getitem__(self, idx):
         flip = self.flips[idx]
         # Read image, and get image information for fasterRCNN
-        if self.normalize is not None:
-            image_A, im_A, im_info_A, gt_boxes_A, num_boxes_A = self.get_image(img_name_list=self.img_A_names, idx=idx, flip=flip)
-            image_B, im_B, im_info_B, gt_boxes_B, num_boxes_B = self.get_image(img_name_list=self.img_B_names, idx=idx, flip=flip)
-        else:
-            image_A, im_info_A, gt_boxes_A, num_boxes_A = self.get_image(img_name_list=self.img_A_names, idx=idx, flip=flip)
-            image_B, im_info_B, gt_boxes_B, num_boxes_B = self.get_image(img_name_list=self.img_B_names, idx=idx, flip=flip)
+        # image_A, im_A, im_info_A, gt_boxes_A, num_boxes_A = self.get_image(img_name_list=self.img_A_names, idx=idx, flip=flip)
+        # image_B, im_B, im_info_B, gt_boxes_B, num_boxes_B = self.get_image(img_name_list=self.img_B_names, idx=idx, flip=flip)
+
+        image_A, im_info_A  = self.get_image(img_name_list=self.img_A_names, idx=idx, flip=flip)
+        image_B, im_info_B = self.get_image(img_name_list=self.img_B_names, idx=idx, flip=flip)
 
         # Read theta
         if not self.random_sample:
@@ -86,13 +84,13 @@ class TrainDataset(Dataset):
                 # theta = theta[[3, 2, 5, 1, 0, 4]]
             if self.geometric_model == 'tps':
                 theta = np.expand_dims(np.expand_dims(theta, 1), 2)
-            if self.geometric_model == 'afftps':
-                theta[[0, 1, 2, 3, 4, 5]] = theta[[3, 2, 5, 1, 0, 4]]
+
         else:
             if self.geometric_model == 'affine' or self.geometric_model == 'afftps':
                 alpha = (np.random.rand(1) - 0.5) * 2 * np.pi * self.random_alpha
                 theta_aff = np.random.rand(6)
-                theta_aff[[2, 5]] = (theta_aff[[2, 5]] - 0.5) * 2 * self.random_t
+                theta_aff[[2, 5]] = (theta_aff[[2, 5]] - 0.5) * 2 * self.random_t   # translation
+                # scale & rotation
                 theta_aff[0] = (1 + (theta_aff[0] - 0.5) * 2 * self.random_s) * np.cos(alpha)
                 theta_aff[1] = (1 + (theta_aff[1] - 0.5) * 2 * self.random_s) * (-np.sin(alpha))
                 theta_aff[3] = (1 + (theta_aff[3] - 0.5) * 2 * self.random_s) * np.sin(alpha)
@@ -111,22 +109,18 @@ class TrainDataset(Dataset):
 
         theta = torch.Tensor(theta.astype(np.float32))
 
+        # sample = {'source_image': image_A, 'target_image': image_B,
+        #           'source_im': im_A, 'target_im': im_B,
+        #           'source_im_info': im_info_A, 'target_im_info': im_info_B,
+        #           'source_gt_boxes': gt_boxes_A, 'target_gt_boxes': gt_boxes_B,
+        #           'source_num_boxes': num_boxes_A, 'target_num_boxes': num_boxes_B,
+        #           'theta_GT': theta}
+
         sample = {'source_image': image_A, 'target_image': image_B,
                   'source_im_info': im_info_A, 'target_im_info': im_info_B,
-                  'source_gt_boxes': gt_boxes_A, 'target_gt_boxes': gt_boxes_B,
-                  'source_num_boxes': num_boxes_A, 'target_num_boxes': num_boxes_B,
                   'theta_GT': theta}
 
-        if self.normalize is not None:
-            # sample = {'source_image': image_A, 'target_image': image_B,
-            #           'source_im': im_A, 'target_im': im_B,
-            #           'source_im_info': im_info_A, 'target_im_info': im_info_B,
-            #           'source_gt_boxes': gt_boxes_A, 'target_gt_boxes': gt_boxes_B,
-            #           'source_num_boxes': num_boxes_A, 'target_num_boxes': num_boxes_B,
-            #           'theta_GT': theta}
-            sample = {'source_image': image_A, 'target_image': image_B,
-                      'theta_GT': theta}
-            sample = self.normalize(sample)
+        sample = self.normalize(sample)
 
         return sample
 
@@ -157,21 +151,19 @@ class TrainDataset(Dataset):
         im_size = torch.Tensor(im_size.astype(np.float32))
         im_size.requires_grad = False
 
+        im_info = im_size
+
         # Get tensors of image, image_info (H, W, im_scale), ground-truth boxes, number of boxes for faster rcnn
-        im, im_info, gt_boxes, num_boxes = roi_data(image, self.out_h)
-        im_info = torch.cat((im_size, im_info), 0)
+        # im, im_info, gt_boxes, num_boxes = roi_data(image, self.out_h)
+        # im_info = torch.cat((im_size, im_info), 0)
 
-        if self.normalize is not None:
-            # Transform numpy to tensor, permute order of image to CHW
-            image = image[:, :, ::-1]   # BGR -> RGB, due to cv2
-            # image = image.astype(np.float32, copy=False)
-            # image = cv2.resize(image, dsize=(self.out_w, self.out_h), interpolation=cv2.INTER_LINEAR)
-            # image = torch.Tensor(image)
-            image = torch.Tensor(image.astype(np.float32))
-            image = image.permute(2, 0, 1)  # For following normalization
-            # Resize image using bilinear sampling with identity affine tnf
-            image.requires_grad = False
-            image = self.affineTnf(image_batch=image.unsqueeze(0)).squeeze(0)
-            return image, im, im_info, gt_boxes, num_boxes
+        # Transform numpy to tensor, permute order of image to CHW
+        image = image[:, :, ::-1]   # BGR -> RGB, due to cv2
+        image = torch.Tensor(image.astype(np.float32))
+        image = image.permute(2, 0, 1)  # For following normalization
+        # Resize image using bilinear sampling with identity affine tnf
+        image.requires_grad = False
+        image = self.affineTnf(image_batch=image.unsqueeze(0)).squeeze(0)
 
-        return im, im_info, gt_boxes, num_boxes
+        # return image, im, im_info, gt_boxes, num_boxes
+        return image, im_info

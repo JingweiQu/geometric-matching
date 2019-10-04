@@ -15,6 +15,51 @@ import cv2
 
 from geometric_matching.util.net_util import expand_dim
 
+class ComposedGeometricTnf(object):
+    """
+    Composed geometric transfromation (affine+tps)
+    """
+
+    def __init__(self, tps_grid_size=3, tps_reg_factor=0, out_h=240, out_w=240, offset_factor=1.0, padding_crop_factor=None, use_cuda=True):
+        self.padding_crop_factor = padding_crop_factor
+        self.affTnf = GeometricTnf(out_h=out_h, out_w=out_w, geometric_model='affine',
+                                   offset_factor=offset_factor if padding_crop_factor is None else padding_crop_factor,
+                                   use_cuda=use_cuda)
+
+        self.tpsTnf = GeometricTnf(out_h=out_h, out_w=out_w, geometric_model='tps', tps_grid_size=tps_grid_size, tps_reg_factor=tps_reg_factor,
+                                   offset_factor=offset_factor if padding_crop_factor is None else 1.0,
+                                   use_cuda=use_cuda)
+
+    def __call__(self, image_batch, theta_aff, theta_aff_tps, use_cuda=True):
+        sampling_grid_aff = self.affTnf(image_batch=None, theta_batch=theta_aff.view(-1, 2, 3),
+                                        return_sampling_grid=True, return_warped_image=False)
+
+        sampling_grid_aff_tps = self.tpsTnf(image_batch=None, theta_batch=theta_aff_tps,
+                                            return_sampling_grid=True, return_warped_image=False)
+
+        if self.padding_crop_factor is not None:
+            sampling_grid_aff_tps = sampling_grid_aff_tps * self.padding_crop_factor
+
+        # put 1e10 value in region out of bounds of sampling_grid_aff
+        in_bound_mask_aff = ((sampling_grid_aff[:, :, :, 0] > -1) * (sampling_grid_aff[:, :, :, 0] < 1) * (sampling_grid_aff[:, :, :, 1] > -1) * (sampling_grid_aff[:, :, :, 1] < 1)).unsqueeze(3)
+        in_bound_mask_aff = in_bound_mask_aff.expand_as(sampling_grid_aff)
+        sampling_grid_aff = torch.mul(in_bound_mask_aff.float(), sampling_grid_aff)
+        sampling_grid_aff = torch.add((in_bound_mask_aff.float() - 1) * (1e10), sampling_grid_aff)
+
+        # compose transformations
+        sampling_grid_aff_tps_comp = F.grid_sample(sampling_grid_aff.permute(0, 3, 1, 2), sampling_grid_aff_tps).permute(0, 2, 3, 1)
+
+        # put 1e10 value in region out of bounds of sampling_grid_aff_tps_comp
+        in_bound_mask_aff_tps = ((sampling_grid_aff_tps[:, :, :, 0] > -1) * (sampling_grid_aff_tps[:, :, :, 0] < 1) * (sampling_grid_aff_tps[:, :, :, 1] > -1) * (sampling_grid_aff_tps[:, :, :, 1] < 1)).unsqueeze(3)
+        in_bound_mask_aff_tps = in_bound_mask_aff_tps.expand_as(sampling_grid_aff_tps_comp)
+        sampling_grid_aff_tps_comp = torch.mul(in_bound_mask_aff_tps.float(), sampling_grid_aff_tps_comp)
+        sampling_grid_aff_tps_comp = torch.add((in_bound_mask_aff_tps.float() - 1) * (1e10), sampling_grid_aff_tps_comp)
+
+        # sample transformed image
+        warped_image_batch = F.grid_sample(image_batch, sampling_grid_aff_tps_comp)
+
+        return warped_image_batch
+
 class GeometricTnf(object):
     """
 
@@ -184,8 +229,8 @@ class TpsGridGen(Module):
         # Grid scale is (-1, -1, 1, 1), a square with (x_min, y_min, x_max, y_max), the points is out_h * out_w
         self.grid_X, self.grid_Y = np.meshgrid(np.linspace(-1, 1, out_w), np.linspace(-1, 1, out_h))
         # self.grid_X, self.grid_Y: size [1, out_h, out_w, 1]
-        self.grid_X = torch.Tensor(self.grid_X).unsqueeze(0).unsqueeze(3)
-        self.grid_Y = torch.Tensor(self.grid_Y).unsqueeze(0).unsqueeze(3)
+        self.grid_X = torch.Tensor(self.grid_X.astype(np.float32)).unsqueeze(0).unsqueeze(3)
+        self.grid_Y = torch.Tensor(self.grid_Y.astype(np.float32)).unsqueeze(0).unsqueeze(3)
         self.grid_X.requires_grad = False
         self.grid_Y.requires_grad = False
         if use_cuda:
@@ -201,8 +246,8 @@ class TpsGridGen(Module):
             # P_X.shape and P_Y.shape: (9, 1)
             P_X = np.reshape(P_X, (-1, 1))  # size (N,1)
             P_Y = np.reshape(P_Y, (-1, 1))  # size (N,1)
-            P_X = torch.Tensor(P_X)
-            P_Y = torch.Tensor(P_Y)
+            P_X = torch.Tensor(P_X.astype(np.float32))
+            P_Y = torch.Tensor(P_Y.astype(np.float32))
             # self.Li.shape: (1, 12, 12)
             # self.Li = Variable(self.compute_L_inverse(P_X, P_Y).unsqueeze(0), requires_grad=False)
             self.Li = self.compute_L_inverse(P_X, P_Y).unsqueeze(0)
@@ -302,10 +347,8 @@ class TpsGridGen(Module):
         # compute distance P_i - (grid_X,grid_Y)
         # grid is expanded in point dim 4, but not in batch dim 0, as points P_X,P_Y are fixed for all batch
         # points_X_for_summation.shape and points_Y_for_summation.shape: (batch_size, H, W, 1, 9)
-        points_X_for_summation = points[:, :, :, 0].unsqueeze(3).unsqueeze(4).expand(
-            points[:, :, :, 0].size() + (1, self.N))
-        points_Y_for_summation = points[:, :, :, 1].unsqueeze(3).unsqueeze(4).expand(
-            points[:, :, :, 1].size() + (1, self.N))
+        points_X_for_summation = points[:, :, :, 0].unsqueeze(3).unsqueeze(4).expand(points[:, :, :, 0].size() + (1, self.N))
+        points_Y_for_summation = points[:, :, :, 1].unsqueeze(3).unsqueeze(4).expand(points[:, :, :, 1].size() + (1, self.N))
 
         if points_b == 1:
             delta_X = points_X_for_summation - P_X

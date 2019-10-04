@@ -1,5 +1,6 @@
 import torch
 import torch.nn.functional as F
+import torchvision
 import numpy as np
 from geometric_matching.util.net_util import batch_cuda
 from geometric_matching.geotnf.transformation import GeometricTnf
@@ -26,7 +27,8 @@ def vis_feature(vis, model, dataloader, use_cuda=True):
     nrow = 32
     padding = 3
     opts = dict(jpgquality=100, title='feature map A')
-    vis.images(watch_feature_A * 255.0, nrow=nrow, padding=padding, opts=opts)
+    # vis.images(watch_feature_A * 255.0, nrow=nrow, padding=padding, opts=opts)
+    vis.image(torchvision.utils.make_grid(watch_feature_A * 255.0, nrow=nrow, padding=padding), opts=opts)
     # vis.image(watch_feature_A[0], opts=opts)
 
     opts = dict(jpgquality=100, title='target image')
@@ -34,7 +36,8 @@ def vis_feature(vis, model, dataloader, use_cuda=True):
     vis.image(image_B, opts=opts)
 
     opts = dict(jpgquality=100, title='feature map B')
-    vis.images(watch_feature_B * 255.0, nrow=nrow, padding=padding, opts=opts)
+    vis.image(torchvision.utils.make_grid(watch_feature_B * 255.0, nrow=nrow, padding=padding), opts=opts)
+    # vis.images(watch_feature_B * 255.0, nrow=nrow, padding=padding, opts=opts)
     # vis.image(watch_feature_B[0], opts=opts)
 
     # opts = dict(title='correlation')

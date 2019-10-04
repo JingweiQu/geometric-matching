@@ -11,12 +11,12 @@ class Arguments():
     def __init__(self, mode='train'):
         self.parser = argparse.ArgumentParser(description='GeometricMatching Arguments')
         self.add_base_parameters()
-        self.add_faster_rcnn_parmaters()
+        # self.add_faster_rcnn_parmaters()
         self.add_model_parameters()
         if mode=='train':
             self.add_train_parameters()
             self.add_train_dataset_parameters()
-            self.add_loss_parameters()
+            self.add_dualloss_parameters()
         elif mode=='test':
             self.add_test_parameters()
             self.add_test_dataset_parameters()
@@ -32,25 +32,28 @@ class Arguments():
         base_params.add_argument('--seed', dest='seed', type=int, default=1, help='Pseudo-RNG seed')
         # base_params.add_argument('--dual', dest='dual', help='Whether dual stage', action='store_true')
         base_params.add_argument('--model', dest='model', type=str, default='', help='Pre-trained model filename')
+        base_params.add_argument('--model_weak', dest='model_weak', type=str, default='', help='Rocco 2018 model filename')
+        base_params.add_argument('--model_1', dest='model_1', type=str, default='', help='Pre-trained model filename')
+        base_params.add_argument('--model_2', dest='model_2', type=str, default='', help='Pre-trained model filename')
         # base_params.add_argument('--model-aff', type=str, default='best_gm_affine.pth.tar', help='Trained affine model filename')
         # base_params.add_argument('--model_tps', dest='model_tps', type=str, default='best_gm_tps_0.2.pth.tar', help='Trained TPS model filename')
         # base_params.add_argument('--model', type=str, default='best_gm_aff_tps_0.3.pth.tar', help='Pre-trained model filename')
         base_params.add_argument('--model_aff', dest='model_aff', type=str, default='', help='Trained affine model filename')
         base_params.add_argument('--model_tps', dest='model_tps', type=str, default='', help='Trained TPS model filename')
 
-    def add_faster_rcnn_parmaters(self):
+    # def add_faster_rcnn_parmaters(self):
         """ Faster-RCNN parameters """
-        rcnn_params = self.parser.add_argument_group('rcnn')
-        rcnn_params.add_argument('--dataset', dest='dataset', help='training dataset', default='pascal_voc_0712', type=str)
-        rcnn_params.add_argument('--cfg', dest='cfg_file', help='optional config file', default='cfgs/res101.yml', type=str)
-        rcnn_params.add_argument('--net', dest='net', help='vgg16, res101', default='res101', type=str)
-        rcnn_params.add_argument('--checksession', dest='checksession', help='checksession to load model', default=1, type=int)
-        rcnn_params.add_argument('--checkepoch', dest='checkepoch', help='checkepoch to load network', default=11, type=int)
-        rcnn_params.add_argument('--checkpoint', dest='checkpoint', help='checkpoint to load network', default=8274, type=int)
-        rcnn_params.add_argument('--set', dest='set_cfgs', help='set config keys', default=None, nargs=argparse.REMAINDER)
-        rcnn_params.add_argument('--load_dir', dest='load_dir', help='directory to load models', default="models", type=str)
-        rcnn_params.add_argument('--cag', dest='class_agnostic', help='whether perform class_agnostic bbox regression', action='store_true')
-        rcnn_params.add_argument('--parallel_type', dest='parallel_type', help='which part of model to parallel, 0: all, 1: model before roi pooling', default=0, type=int)
+        # rcnn_params = self.parser.add_argument_group('rcnn')
+        # rcnn_params.add_argument('--dataset', dest='dataset', help='training dataset', default='pascal_voc_0712', type=str)
+        # rcnn_params.add_argument('--cfg', dest='cfg_file', help='optional config file', default='cfgs/res101.yml', type=str)
+        # rcnn_params.add_argument('--net', dest='net', help='vgg16, res101', default='res101', type=str)
+        # rcnn_params.add_argument('--checksession', dest='checksession', help='checksession to load model', default=1, type=int)
+        # rcnn_params.add_argument('--checkepoch', dest='checkepoch', help='checkepoch to load network', default=11, type=int)
+        # rcnn_params.add_argument('--checkpoint', dest='checkpoint', help='checkpoint to load network', default=8274, type=int)
+        # rcnn_params.add_argument('--set', dest='set_cfgs', help='set config keys', default=None, nargs=argparse.REMAINDER)
+        # rcnn_params.add_argument('--load_dir', dest='load_dir', help='directory to load models', default="models", type=str)
+        # rcnn_params.add_argument('--cag', dest='class_agnostic', help='whether perform class_agnostic bbox regression', action='store_true')
+        # rcnn_params.add_argument('--parallel_type', dest='parallel_type', help='which part of model to parallel, 0: all, 1: model before roi pooling', default=0, type=int)
 
         # rcnn_params.add_argument('--dataset', dest='dataset', help='training dataset', default='pascal_voc_2011', type=str)
         # rcnn_params.add_argument('--cfg', dest='cfg_file', help='optional config file', default='cfgs/vgg16.yml', type=str)
@@ -67,6 +70,8 @@ class Arguments():
         model_params.add_argument('--fr_feature_size', dest='fr_feature_size', type=int, default=15, help='Feature map input size for feat.reg. conv layers')
         model_params.add_argument('--fr_kernel_sizes', dest='fr_kernel_sizes', nargs='+', type=int, default=[7, 5], help='Kernels sizes in feat.reg. conv layers')
         model_params.add_argument('--fr_channels', dest='fr_channels', nargs='+', type=int, default=[128, 64], help='Channels in feat. reg. conv layers')
+        # model_params.add_argument('--fr_kernel_sizes', dest='fr_kernel_sizes', nargs='+', type=int, default=[1, 7, 5, 3], help='Kernels sizes in feat.reg. conv layers')
+        # model_params.add_argument('--fr_channels', dest='fr_channels', nargs='+', type=int, default=[256, 128, 64, 32], help='Channels in feat. reg. conv layers')
         # model_params.add_argument('--pretrained', type=str_to_bool, nargs='?', const=True, default=True, help='Pre-trained feature extraction network on ImageNet')
 
     def add_train_parameters(self):
@@ -84,7 +89,7 @@ class Arguments():
         # train_params.add_argument('--seed', type=int, default=1, help='Pseudo-RNG seed')
         train_params.add_argument('--use_mse_loss', dest='use_mse_loss', type=str_to_bool, nargs='?', const=True, default=False, help='Use MSE loss on tnf. parameters')
         # Trained model parameters
-        # train_params.add_argument('--resume', dest='resume', help='Whether resume interrupted training', action='store_true')
+        train_params.add_argument('--resume', dest='resume', help='Whether resume interrupted training', action='store_true')
         # train_params.add_argument('--trained-models-dir', type=str, default='geometric_matching/trained_models', help='Path to trained models folder')
         # train_params.add_argument('--trained-models-fn', type=str, default='checkpoint_adam', help='Trained model filename')
         # Parts of model to train
@@ -115,11 +120,14 @@ class Arguments():
         dataset_params.add_argument('--eval_metric', dest='eval_metric', type=str, default='pck', help='pck/distance')
         dataset_params.add_argument('--pck_alpha', dest='pck_alpha', type=float, default=0.1, help='pck margin factor alpha')
 
-    def add_loss_parameters(self):
+    def add_dualloss_parameters(self):
         """ Parameters of loss """
-        loss_params = self.parser.add_argument_group('loss')
+        loss_params = self.parser.add_argument_group('dualloss')
         loss_params.add_argument('--tps_grid_size', dest='tps_grid_size', type=int, default=3, help='Tps grid size')
-        loss_params.add_argument('--tps_reg_factor', dest='tps_reg_factor', type=float, default=0.2, help='Tps regularization factor')
+        loss_params.add_argument('--tps_reg_factor', dest='tps_reg_factor', type=float, default=0.0, help='Tps regularization factor')
+        loss_params.add_argument('--normalize_inlier_count', dest='normalize_inlier_count', type=str_to_bool, nargs='?', const=True, default=True)
+        loss_params.add_argument('--dilation_filter', dest='dilation_filter', type=int, default=0, help='type of dilation filter: 0:no filter;1:4-neighs;2:8-neighs')
+        loss_params.add_argument('--use_conv_filter', dest='use_conv_filter', type=str_to_bool, nargs='?', const=True, default=False, help='use conv filter instead of dilation')
         
     def add_test_parameters(self):
         """ Test parameters """
@@ -135,7 +143,7 @@ class Arguments():
         dataset_params.add_argument('--categories', dest='categories', nargs='+', type=int, default=0, help='Indices of categories for testing')
         dataset_params.add_argument('--eval_metric', dest='eval_metric', type=str, default='pck', help='pck/distance')
         dataset_params.add_argument('--pck_alpha', dest='pck_alpha', type=float, default=0.1, help='pck margin factor alpha')
-        dataset_params.add_argument('--flow_output_dir', dest='flow_output_dir', type=str, default='geometric_matching/tss_results/resnet101/random_t_tps_0.4', help='flow output dir')
+        dataset_params.add_argument('--flow_output_dir', dest='flow_output_dir', type=str, default='geometric_matching/tss_results/resnet101/', help='flow output dir')
         dataset_params.add_argument('--tps_reg_factor', dest='tps_reg_factor', type=float, default=0.0, help='regularisation factor for tps tnf')
 
     def parse(self, arg_str=None):
